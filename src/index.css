@@ -1,0 +1,168 @@
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  background: #08080f;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  overflow-x: hidden;
+  -webkit-text-size-adjust: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  max-width: 100%;
+  font: inherit;
+}
+
+button {
+  min-height: 36px;
+  touch-action: manipulation;
+}
+
+img,
+svg {
+  max-width: 100%;
+}
+
+table {
+  max-width: 100%;
+}
+
+@media (max-width: 768px) {
+  .app-mobile {
+    width: 100%;
+    overflow-x: hidden;
+  }
+
+  .app-mobile__content {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .app-mobile__content > div {
+    min-width: 0;
+  }
+
+  .app-mobile table {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .app-mobile table th,
+  .app-mobile table td {
+    white-space: nowrap;
+  }
+
+  .app-mobile [style*="grid-template-columns"] {
+    min-width: 0 !important;
+  }
+
+  .app-mobile input,
+  .app-mobile select,
+  .app-mobile textarea {
+    min-height: 42px;
+    font-size: 16px !important;
+  }
+
+  .app-mobile button {
+    min-height: 40px;
+  }
+
+  .app-mobile h1,
+  .app-mobile h2,
+  .app-mobile h3 {
+    overflow-wrap: anywhere;
+  }
+
+  .app-mobile .comanda-form {
+    grid-template-columns: 1fr !important;
+  }
+
+  .app-mobile .comanda-form button {
+    width: 100%;
+  }
+
+  .waiter-products {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    max-height: 38vh;
+    overflow-y: auto;
+    margin-bottom: 12px;
+  }
+
+  .waiter-product {
+    min-height: 64px;
+    padding: 9px;
+    border: 1px solid #1e1e3a;
+    border-radius: 10px;
+    background: #0f0f1c;
+    color: #e2e8f0;
+    text-align: left;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 5px;
+    cursor: pointer;
+  }
+
+  .waiter-product strong {
+    color: #34d399;
+    font-size: 12px;
+  }
+
+  .waiter-cart {
+    border: 1px solid #2a2a4a;
+    border-radius: 10px;
+    padding: 10px;
+  }
+
+  .waiter-cart-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0;
+    border-bottom: 1px solid #1e1e3a;
+    font-size: 12px;
+  }
+
+  .waiter-quantity {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .waiter-quantity button {
+    min-height: 30px;
+    width: 30px;
+    padding: 0;
+    border: 1px solid #2a2a4a;
+    border-radius: 6px;
+    background: #14142a;
+    color: #e2e8f0;
+  }
+
+  .waiter-total {
+    display: flex;
+    justify-content: space-between;
+    padding-top: 10px;
+    font-size: 15px;
+  }
+}
+
+@media (min-width: 769px) and (max-width: 1100px) {
+  .app-mobile__content {
+    padding: 1rem;
+  }
+}
