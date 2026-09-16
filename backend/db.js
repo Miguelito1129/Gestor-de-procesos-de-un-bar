@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS negocios (
 CREATE TABLE IF NOT EXISTS usuarios (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
   role TEXT NOT NULL, negocios TEXT DEFAULT 'all', password_hash TEXT NOT NULL,
-  salt TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  salt TEXT NOT NULL, password_hash_local TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS staff (
   id TEXT PRIMARY KEY, negocio_id TEXT NOT NULL, name TEXT NOT NULL,
@@ -69,9 +69,11 @@ CREATE TABLE IF NOT EXISTS turnos (
 );
 CREATE TABLE IF NOT EXISTS comandas (
   id TEXT PRIMARY KEY, turno_id TEXT NOT NULL, mesa TEXT NOT NULL, mesero_id TEXT NOT NULL,
+  consecutivo INTEGER, mesero_nombre TEXT,
   estado TEXT DEFAULT 'enviada', modo_pago TEXT, subtotal INTEGER DEFAULT 0,
   descuento INTEGER DEFAULT 0, total INTEGER DEFAULT 0, creado_en TEXT DEFAULT CURRENT_TIMESTAMP,
-  confirmado_en TEXT, despachado_en TEXT, pagado_en TEXT
+  confirmado_en TEXT, despachado_en TEXT, pagado_en TEXT,
+  pago_confirmado INTEGER DEFAULT 0, pago_registrado_por TEXT, pago_registrado_en TEXT
 );
 CREATE TABLE IF NOT EXISTS comanda_items (
   id TEXT PRIMARY KEY, comanda_id TEXT NOT NULL, producto_id TEXT NOT NULL,
@@ -114,6 +116,28 @@ CREATE TABLE IF NOT EXISTS cierres_semanales (
   novedades TEXT, cerrado_por TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 `);
+
+const userColumns = db.prepare('PRAGMA table_info(usuarios)').all().map(column => column.name);
+if (!userColumns.includes('password_hash_local')) {
+  db.exec('ALTER TABLE usuarios ADD COLUMN password_hash_local TEXT');
+}
+
+const comandaColumns = db.prepare('PRAGMA table_info(comandas)').all().map(column => column.name);
+if (!comandaColumns.includes('consecutivo')) {
+  db.exec('ALTER TABLE comandas ADD COLUMN consecutivo INTEGER');
+}
+if (!comandaColumns.includes('mesero_nombre')) {
+  db.exec('ALTER TABLE comandas ADD COLUMN mesero_nombre TEXT');
+}
+if (!comandaColumns.includes('pago_confirmado')) {
+  db.exec('ALTER TABLE comandas ADD COLUMN pago_confirmado INTEGER DEFAULT 0');
+}
+if (!comandaColumns.includes('pago_registrado_por')) {
+  db.exec('ALTER TABLE comandas ADD COLUMN pago_registrado_por TEXT');
+}
+if (!comandaColumns.includes('pago_registrado_en')) {
+  db.exec('ALTER TABLE comandas ADD COLUMN pago_registrado_en TEXT');
+}
 
 const movementColumns = db.prepare('PRAGMA table_info(movimientos_inventario)').all().map(column => column.name);
 if (!movementColumns.includes('comprobante_url')) {

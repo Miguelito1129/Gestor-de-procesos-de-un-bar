@@ -91,7 +91,7 @@ Los históricos de planillas y gastos se conservan. Las migraciones usan identif
 
 ### Apertura de turnos
 
-El componente `src/components/Turnos/AbrirTurno.jsx` permite:
+La apertura operativa se realiza desde `src/components/Planilla/Planilla.jsx`, que permite:
 
 - Elegir modo discoteca o cantina.
 - Registrar la base de caja.
@@ -144,7 +144,15 @@ La compilación fue validada con `npm run build`.
 - La barra puede registrar entradas urgentes de productos existentes, siempre con turno abierto y justificación obligatoria. La factura es opcional y se guarda como comprobante local en el movimiento de inventario.
 - Se creó una interfaz móvil específica para meseros: búsqueda de productos, catálogo táctil, cantidades incrementales, carrito, total actualizado en vivo, envío de pedidos y listado de pedidos de la noche.
 - Los pedidos del mesero muestran estados legibles: falta confirmación de barra, pagado o pedido cancelado. El mesero puede cancelar un pedido mientras todavía está pendiente de autorización.
-- El usuario con rol `barra` ahora puede abrir turnos desde su propia navegación. El sistema lo propone automáticamente como responsable de barra y mantiene la selección obligatoria de al menos un mesero.
+- La barra ya no abre turnos desde su navegación. El administrador abre y cierra el turno únicamente desde Planillas; esa apertura crea el turno compartido en SQLite para barra y meseros.
+- Se separaron las interfaces operativas en `MeseroWorkspace.jsx` y `BarraWorkspace.jsx`. `RoleWorkspace.jsx` quedó como enrutador y `useTurnoData.js` centraliza la carga y polling del turno, productos y comandas. El módulo de administrador no fue alterado.
+- La interfaz del mesero ahora organiza el catálogo por categorías, muestra stock y cantidades seleccionadas, y permite editar o cancelar comandas pendientes. Toda modificación solicita confirmación antes de actualizar la comanda y avisar a barra.
+- El inventario operativo es compartido: `productos` en SQLite es la fuente única que administra el módulo Inventario del administrador y que consultan/actualizan barra y mesero durante el turno.
+- Las comandas ya no usan mesa en la interfaz. Cada turno asigna un consecutivo a cada comanda y guarda `mesero_nombre`; el mesero consulta únicamente sus propias comandas y barra puede desplegar los productos antes de autorizar.
+- Al desplegar una comanda en barra, cada producto se compara con el stock actual de `productos`, mostrando cantidad solicitada, existencia disponible y alerta de faltante. La autorización se bloquea visualmente si algún producto no alcanza, además de conservar la validación al guardar.
+- La entrada urgente de inventario de barra quedó dentro de un panel desplegable. La autorización de una comanda descuenta inventario y la deja como `entregada_falta_pago`; el mesero confirma `pago recibido` o mantiene `falta pago`, y solo la confirmación positiva cambia el estado a `pagada`.
+- Administración tiene una vista de Comandas con filtro por estado, productos y marcas de tiempo de creación, autorización, entrega y pago.
+- Al confirmar el pago, el mesero debe seleccionar efectivo, tarjeta o transferencia. El medio se guarda en `comandas.modo_pago` y `pagos.tipo`; transferencia queda registrada localmente como preparación para la futura integración API.
 
 ### Adaptación responsive
 

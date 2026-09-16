@@ -30,7 +30,8 @@ export const hashPwd = async (pwd, salt) => {
   return Array.from(new Uint8Array(bits)).map(b => b.toString(16).padStart(2, '0')).join('');
 };
 
-export const verifyPwd = async (pwd, salt, hash) => {
+export const verifyPwd = async (pwd, salt, hash, localHashValue = '') => {
+  if (localHashValue && localHash(`${salt}${APP_PEPPER}${pwd}`) === localHashValue) return true;
   if ((await hashPwd(pwd, salt)) === hash) return true;
   return localHash(`${salt}${APP_PEPPER}${pwd}`) === hash;
 };

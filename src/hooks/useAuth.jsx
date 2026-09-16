@@ -1,5 +1,5 @@
 import { useState, useEffect, createContext, useContext } from "react";
-import { genSalt, hashPwd, verifyPwd } from "../utils/auth.js";
+import { genSalt, hashPwd, localHash, verifyPwd } from "../utils/auth.js";
 import { uid } from "../utils/helpers.js";
 import { can, canSeeNeg } from "../constants/roles.js";
 import { localFetch, localUpsert, localDelete } from "../lib/localApi.js";
@@ -65,17 +65,19 @@ export function AuthProvider({ children }) {
         storedUsers = legacyUsers.length ? legacyUsers : await Promise.all(DEFAULT_USERS_PLAIN.map(async u => {
           const salt = genSalt();
           const hash = await hashPwd(u.password, salt);
-          return { id:u.id, name:u.name, email:u.email, role:u.role, negocios:u.negocios, passwordHash:hash, salt };
+          return { id:u.id, name:u.name, email:u.email, role:u.role, negocios:u.negocios, passwordHash:hash, passwordHashLocal:localHash(`${salt}${import.meta.env.VITE_APP_PEPPER || 'GESBAR_PROD_2024_X9mK'}${u.password}`), salt };
         }));
         const saved = await localUpsert('usuarios', storedUsers.map(u => ({
           id:u.id, name:u.name, email:u.email, role:u.role, negocios:u.negocios,
           password_hash:u.passwordHash, salt:u.salt,
+          password_hash_local:u.passwordHashLocal,
         })));
         if (!saved) throw new Error('No fue posible crear los usuarios iniciales.');
       } else {
         storedUsers = storedUsers.map(u => ({
           id:u.id, name:u.name, email:u.email, role:u.role, negocios:u.negocios,
           passwordHash:u.password_hash, salt:u.salt,
+          passwordHashLocal:u.password_hash_local,
         }));
       }
 
@@ -102,6 +104,7 @@ export function AuthProvider({ children }) {
     const saved = await localUpsert('usuarios', u.map(user => ({
       id:user.id, name:user.name, email:user.email, role:user.role, negocios:user.negocios,
       password_hash:user.passwordHash, salt:user.salt,
+      password_hash_local:user.passwordHashLocal,
     })));
     if (!saved) throw new Error('No fue posible guardar los usuarios en SQLite.');
   };
@@ -116,7 +119,7 @@ export function AuthProvider({ children }) {
       return { error: 'Credenciales incorrectas.' };
     }
 
-    const ok = await verifyPwd(password, u.salt, u.passwordHash);
+    const ok = await verifyPwd(password, u.salt, u.passwordHash, u.passwordHashLocal);
     if (!ok) {
       const msg = recordFailedAttempt(bf.key, bf.record);
       return { error: msg };
@@ -135,7 +138,8 @@ export function AuthProvider({ children }) {
     if (!password || password.length < 8) return { error:'Contraseña mínimo 8 caracteres' };
     const salt = genSalt();
     const hash = await hashPwd(password, salt);
-    await saveUsers([...users, { id:uid(), name, email, role, negocios, passwordHash:hash, salt }]);
+    const localPasswordHash = localHash(`${salt}${import.meta.env.VITE_APP_PEPPER || 'GESBAR_PROD_2024_X9mK'}${password}`);
+    await saveUsers([...users, { id:uid(), name, email, role, negocios, passwordHash:hash, passwordHashLocal:localPasswordHash, salt }]);
     return { success: true };
   };
 
@@ -146,6 +150,7 @@ export function AuthProvider({ children }) {
       if (changes.password) {
         const salt = genSalt();
         r.passwordHash = await hashPwd(changes.password, salt);
+        r.passwordHashLocal = localHash(`${salt}${import.meta.env.VITE_APP_PEPPER || 'GESBAR_PROD_2024_X9mK'}${changes.password}`);
         r.salt = salt;
       }
       delete r.password;

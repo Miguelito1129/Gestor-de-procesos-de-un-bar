@@ -8,6 +8,15 @@ import { uid } from "../../utils/helpers.js";
 import { printPlanilla } from "../../utils/printPlanilla.js";
 import { Badge, Metric, SectionTitle, TabBar, Modal } from "../common/index.jsx";
 const r1000 = v => Math.round(v / 1000) * 1000; // redondear al millar más cercano
+const COMANDA_STATUS = {
+  enviada: ['Esperando autorización', C.amber],
+  entregada_falta_pago: ['Entregado · falta pago', C.amber],
+  pagada: ['Pagado', C.green],
+  cancelada: ['Cancelado', C.red],
+};
+const formatComandaTime = value => value
+  ? new Date(value).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })
+  : '—';
 
 // Personal predefinido por defecto para nuevos turnos
 const STAFF_DEFECTO = [
@@ -44,6 +53,9 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
   const saved = () => { try{return JSON.parse(localStorage.getItem(TURNO_KEY)||'{}');}catch{return {};} };
 
   const [step,setStep]         = useState(()=>saved().step||'inicio');
+  const [turnoId,setTurnoId]   = useState(()=>saved().turnoId||'');
+  const [turnoAbierto,setTurnoAbierto] = useState(null);
+  const [verificandoTurno,setVerificandoTurno] = useState(true);
   const [apertura,setApertura] = useState(()=>saved().apertura||'');
   const [baseCaja,setBaseCaja] = useState(()=>saved().baseCaja||'1000000');
   const [staffFilter,setStaffFilter] = useState('');
@@ -83,15 +95,91 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
   const [resumen,setResumen]      = useState(null);
   const [gForm,setGForm]          = useState({desc:'',monto:''});
   const [viewPlanilla,setViewPlanilla] = useState(null);
+  const [viewComandas,setViewComandas] = useState([]);
+  const [viewComandaItems,setViewComandaItems] = useState({});
+  const [comandasLoading,setComandasLoading] = useState(false);
   const [editingPlatId,setEditingPlatId]     = useState(null); // id de la fila con selector de plataforma abierto
   const [pctBarra,setPctBarra]               = useState(()=>saved().pctBarra??3);
   const [pctMeseros,setPctMeseros]           = useState(()=>saved().pctMeseros??5);
 
+  useEffect(() => {
+    let active = true;
+    setVerificandoTurno(true);
+    localFetch(
+      'turnos',
+      `negocio_id=eq.${negocio.id}&estado=eq.abierto&select=*&order=fecha_apertura.desc&limit=1`,
+    ).then(turnos => {
+      if (!active) return;
+      const abierto = turnos?.[0] || null;
+      setTurnoAbierto(abierto);
+      setVerificandoTurno(false);
+      if (abierto) {
+        setTurnoId(abierto.id);
+        setStep('abierto');
+        if (abierto.base_caja !== undefined && abierto.base_caja !== null) {
+          setBaseCaja(String(abierto.base_caja));
+        }
+        if (abierto.fecha_apertura) {
+          setApertura(new Date(abierto.fecha_apertura).toLocaleTimeString('es-CO', {
+            hour: '2-digit',
+            minute: '2-digit',
+          }));
+        }
+      } else {
+        setTurnoId(currentTurnoId => {
+          if (currentTurnoId) setStep('inicio');
+          return '';
+        });
+      }
+    });
+    return () => { active = false; };
+  }, [negocio.id]);
+
+  useEffect(() => {
+    if (!viewPlanilla) {
+      setViewComandas([]);
+      setViewComandaItems({});
+      return undefined;
+    }
+    let active = true;
+    setComandasLoading(true);
+    (async () => {
+      const shifts = await localFetch(
+        'turnos',
+        `negocio_id=eq.${negocio.id}&select=*&order=fecha_apertura.desc`,
+      );
+      const selectedShifts = (shifts || []).filter(shift =>
+        shift.legacy_planilla_id === viewPlanilla.id
+      );
+      const orders = (await Promise.all(selectedShifts.map(shift =>
+        localFetch('comandas', `turno_id=eq.${shift.id}&select=*&order=creado_en.asc`)
+      ))).flat().filter(Boolean);
+      const itemRows = (await Promise.all(orders.map(order =>
+        localFetch('comanda_items', `comanda_id=eq.${order.id}&select=*`)
+      ))).flat().filter(Boolean);
+      const products = await localFetch('productos', `negocio_id=eq.${negocio.id}&select=id,name`);
+      const names = new Map((products || []).map(product => [product.id, product.name]));
+      const groupedItems = itemRows.reduce((groups, item) => ({
+        ...groups,
+        [item.comanda_id]: [...(groups[item.comanda_id] || []), {
+          ...item,
+          nombre: names.get(item.producto_id) || 'Producto no disponible',
+        }],
+      }), {});
+      if (active) {
+        setViewComandas(orders);
+        setViewComandaItems(groupedItems);
+        setComandasLoading(false);
+      }
+    })();
+    return () => { active = false; };
+  }, [negocio.id, viewPlanilla]);
+
   useEffect(()=>{
     if(step==='inicio'||step==='cerrado') return;
-    const data={step,apertura,baseCaja,staffActivo,checklist,movs,gastosT,bancosTransfs,extras,pendientes,novedades,ventasMesero,billetes,pctBarra,pctMeseros};
+    const data={step,turnoId,apertura,baseCaja,staffActivo,checklist,movs,gastosT,bancosTransfs,extras,pendientes,novedades,ventasMesero,billetes,pctBarra,pctMeseros};
     localStorage.setItem(TURNO_KEY, JSON.stringify(data));
-  },[step,apertura,movs,gastosT,bancosTransfs,extras,pendientes,novedades,ventasMesero,billetes,checklist,pctBarra,pctMeseros,staffActivo]);
+  },[step,turnoId,apertura,movs,gastosT,bancosTransfs,extras,pendientes,novedades,ventasMesero,billetes,checklist,pctBarra,pctMeseros,staffActivo]);
 
 
 
@@ -116,13 +204,56 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
   const neto               = totalVentas-totalBancos+(parseInt(extras)||0)-totalGastosT-totalPersonal-(parseInt(pendientes)||0);
 
   const resetTurno = () => {
-    setStep('inicio');setMovs({});setGastosT([]);setBancosTransfs([]);
+    setStep('inicio');setTurnoId('');setMovs({});setGastosT([]);setBancosTransfs([]);
     setExtras('');setPendientes('');setNovedades('');setVentasMesero({});setBilletes({});setResumen(null);setChecklist({});
     setStaffActivo(negocio.staff.map(s=>({...s,activo:true})));
     localStorage.removeItem(TURNO_KEY);
   };
 
-  const confirmarApertura = (checkItems, novedadesApert='') => {
+  const confirmarApertura = async (checkItems, novedadesApert='') => {
+    const existing = await localFetch('turnos', `negocio_id=eq.${negocio.id}&estado=eq.abierto&select=id&limit=1`);
+    if (existing?.length) {
+      alert('Ya existe un turno abierto para este negocio.');
+      return;
+    }
+    const id = uid();
+    const activos = staffActivo.filter(person => person.activo);
+    const barra = activos.find(person => person.rol === 'barra');
+    const meserosTurno = activos.filter(person => person.rol === 'mesero');
+    const inventarioApertura = negocio.productos.map(product => ({
+      producto_id: product.id,
+      nombre: product.name,
+      cantidad: Number(product.stock || 0),
+    }));
+    const created = await localInsert('turnos', {
+      id,
+      negocio_id: negocio.id,
+      modo_operacion: negocio.tipo === 'cantina' ? 'cantina' : 'discoteca',
+      base_caja: Number(baseCaja) || 0,
+      estado: 'abierto',
+      inventario_apertura: inventarioApertura,
+      abierto_por: user?.id || null,
+      barra_id: barra?.id || null,
+      meseros_ids: meserosTurno.map(person => person.id),
+      novedades_apertura: novedadesApert.trim() || null,
+    });
+    if (!created) {
+      alert('No fue posible abrir el turno en SQLite.');
+      return;
+    }
+    const movements = inventarioApertura.filter(item => item.cantidad > 0).map(item => ({
+      id: uid(),
+      negocio_id: negocio.id,
+      turno_id: id,
+      producto_id: item.producto_id,
+      tipo: 'apertura',
+      cantidad: item.cantidad,
+      motivo: 'Conteo físico de apertura',
+      creado_por: user?.id || null,
+    }));
+    if (movements.length) await localInsert('movimientos_inventario', movements);
+    setTurnoId(id);
+    setTurnoAbierto({ id, base_caja: Number(baseCaja) || 0 });
     setChecklist(checkItems);
     if(novedadesApert) setNovedades(novedadesApert);
     setApertura(NOW_TIME());
@@ -142,6 +273,20 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
     r.diferencia=totalBilletes-neto;
     const newProds=negocio.productos.map(p=>{const m=movs[p.id];if(!m)return p;if(m.existencias!==undefined)return{...p,stock:Math.max(0,m.existencias)};return{...p,stock:Math.max(0,p.stock+(m.entradas||0)-(m.salidas||0)-(m.cortesia||0))};});
     onUpdateNegocio({...negocio,productos:newProds,planillas:[r,...negocio.planillas]});
+    if (turnoId) {
+      localUpdate('turnos', { id: turnoId }, {
+        estado: 'cerrado',
+        legacy_planilla_id: r.id,
+        fecha_cierre: new Date().toISOString(),
+        inventario_cierre: movsList.map(item => ({
+          producto_id: negocio.productos.find(product => product.name === item.name)?.id || null,
+          nombre: item.name,
+          cantidad: item.final,
+        })),
+        cerrado_por: user?.id || null,
+        novedades_cierre: novedades || null,
+      });
+    }
     localStorage.removeItem(TURNO_KEY);
     setResumen(r);setStep('cerrado');
   };
@@ -163,6 +308,36 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
             <Metric label="Bancos"   value={COP(viewPlanilla.bancos||0)}    color={C.indigo}/>
             <Metric label="Neto"     value={COP(viewPlanilla.neto)}         color={C.amber}/>
             <Metric label="Personal" value={COP(viewPlanilla.personal||0)}  color={C.red}/>
+          </div>
+          <div style={{...s.card,marginTop:'1rem'}}>
+            <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>🧾 Comandas de esta noche</div>
+            <div style={{fontSize:12,color:C.sub,marginBottom:12}}>Solo se muestran las comandas del turno correspondiente a la planilla {viewPlanilla.fecha}.</div>
+            {comandasLoading&&<div style={{color:C.sub,fontSize:12}}>Cargando comandas...</div>}
+            {!comandasLoading&&!viewComandas.length&&<div style={{color:C.sub,fontSize:12}}>No hubo comandas registradas en este turno.</div>}
+            {viewComandas.map(comanda=>{
+              const status=COMANDA_STATUS[comanda.estado]||[comanda.estado,C.sub];
+              return <div key={comanda.id} style={{borderTop:`1px solid ${C.border}50`,padding:'10px 0'}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                  <div>
+                    <strong>Comanda #{comanda.consecutivo||'—'}</strong>
+                    <div style={{fontSize:11,color:C.sub}}>Mesero: {comanda.mesero_nombre||comanda.mesero_id} · Total: {COP(comanda.total)}</div>
+                  </div>
+                  <Badge color={status[1]} small>{status[0]}</Badge>
+                </div>
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:5,marginTop:8,fontSize:11,color:C.sub}}>
+                  <span>Creada: {formatComandaTime(comanda.creado_en)}</span>
+                  <span>Autorizada: {formatComandaTime(comanda.confirmado_en)}</span>
+                  <span>Entregada: {formatComandaTime(comanda.despachado_en)}</span>
+                  <span>Pago: {formatComandaTime(comanda.pagado_en||comanda.pago_registrado_en)}</span>
+                </div>
+                <div style={{marginTop:7,padding:'7px 9px',background:C.surface,borderRadius:7}}>
+                  {(viewComandaItems[comanda.id]||[]).map(item=><div key={item.id} style={{display:'flex',justifyContent:'space-between',fontSize:11,padding:'3px 0'}}>
+                    <span>{item.cantidad} × {item.nombre}</span>
+                    <strong style={{color:C.green}}>{COP(Number(item.cantidad)*Number(item.precio_unitario))}</strong>
+                  </div>)}
+                </div>
+              </div>;
+            })}
           </div>
         </div>
       ) : (
@@ -316,6 +491,27 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
               <Metric label="Neto"     value={COP(viewPlanilla.neto)}         color={C.amber}/>
               <Metric label="Personal" value={COP(viewPlanilla.personal||0)}  color={C.red}/>
             </div>
+            <div style={{marginTop:'1rem',paddingTop:'1rem',borderTop:`1px solid ${C.border}50`}}>
+              <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>🧾 Comandas de esta noche</div>
+              <div style={{fontSize:12,color:C.sub,marginBottom:12}}>Solo se muestran las comandas del turno correspondiente a la planilla {viewPlanilla.fecha}.</div>
+              {comandasLoading&&<div style={{color:C.sub,fontSize:12}}>Cargando comandas...</div>}
+              {!comandasLoading&&!viewComandas.length&&<div style={{color:C.sub,fontSize:12}}>No hubo comandas registradas en este turno.</div>}
+              {viewComandas.map(comanda=>{
+                const status=COMANDA_STATUS[comanda.estado]||[comanda.estado,C.sub];
+                return <div key={comanda.id} style={{borderTop:`1px solid ${C.border}50`,padding:'10px 0'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                    <div><strong>Comanda #{comanda.consecutivo||'—'}</strong><div style={{fontSize:11,color:C.sub}}>Mesero: {comanda.mesero_nombre||comanda.mesero_id} · Total: {COP(comanda.total)}</div></div>
+                    <Badge color={status[1]} small>{status[0]}</Badge>
+                  </div>
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:5,marginTop:8,fontSize:11,color:C.sub}}>
+                    <span>Creada: {formatComandaTime(comanda.creado_en)}</span><span>Autorizada: {formatComandaTime(comanda.confirmado_en)}</span><span>Entregada: {formatComandaTime(comanda.despachado_en)}</span><span>Pago: {formatComandaTime(comanda.pagado_en||comanda.pago_registrado_en)}</span>
+                  </div>
+                  <div style={{marginTop:7,padding:'7px 9px',background:C.surface,borderRadius:7}}>
+                    {(viewComandaItems[comanda.id]||[]).map(item=><div key={item.id} style={{display:'flex',justifyContent:'space-between',fontSize:11,padding:'3px 0'}}><span>{item.cantidad} × {item.nombre}</span><strong style={{color:C.green}}>{COP(Number(item.cantidad)*Number(item.precio_unitario))}</strong></div>)}
+                  </div>
+                </div>;
+              })}
+            </div>
           </div>
         )}
 
@@ -355,6 +551,11 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
         <div><div style={{fontSize:18,fontWeight:800}}>Turno Activo — {negocio.name}</div><div style={{fontSize:12,color:C.sub,marginTop:2}}>Apertura: {apertura} · Base: {COP(parseInt(baseCaja))}</div></div>
         <Badge color={C.green}>En Curso</Badge>
       </div>
+      {turnoAbierto&&<div style={{...s.card,borderColor:C.green+'70',background:C.green+'10',display:'flex',alignItems:'center',gap:10,marginBottom:'1rem',padding:'10px 14px'}}>
+        <span style={{fontSize:18}}>🔔</span>
+        <div style={{flex:1,fontSize:12}}><strong>Hay un turno abierto.</strong><div style={{color:C.sub}}>Puedes continuar trabajando y cerrarlo desde la pestaña “Cerrar Turno”.</div></div>
+        <button style={{...s.btn('primary'),padding:'6px 10px',fontSize:11}} onClick={()=>setTab('cierre')}>Ir al cierre</button>
+      </div>}
       <div style={{position:'sticky',top:56,zIndex:10,background:C.bg,paddingBottom:'0.5rem',marginBottom:'0.25rem',borderBottom:`1px solid ${C.border}30`}}>
         <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:6,marginBottom:'0.4rem'}}>
           <Metric label="Ventas"   value={COP(totalVentas)}    color={C.green}   compact/>

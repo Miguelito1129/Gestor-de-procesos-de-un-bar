@@ -17,7 +17,6 @@ import ChatbotIA        from "./ChatbotIA/ChatbotIA.jsx";
 import UserMgmt         from "./Users/UserMgmt.jsx";
 import NuevoNegocioModal from "./NuevoNegocioModal.jsx";
 import RoleWorkspace    from "./RoleWorkspace/RoleWorkspace.jsx";
-import AbrirTurno       from "./Turnos/AbrirTurno.jsx";
 
 // ── Storage key ───────────────────────────────────────────────────────────────
 
@@ -40,16 +39,16 @@ const INIT_NEGOCIOS = []; /*
 const VIEWS_ADMIN    = [{id:'dashboard',label:'Dashboard'},{id:'planilla',label:'Planillas'},{id:'inventario',label:'Inventario'},{id:'gastos',label:'Gastos'},{id:'cierres',label:'📅 Cierres'},{id:'reportes',label:'📊 Reportes'},{id:'chat',label:'✦ IA'},{id:'usuarios',label:'👤 Usuarios'}];
 const VIEWS_ADMIN_TURNO = [{id:'planilla',label:'Turno'}];
 const VIEWS_DUENO    = [{id:'dashboard',label:'Dashboard'},{id:'cierres',label:'📅 Cierres'},{id:'reportes',label:'📊 Reportes'},{id:'inventario',label:'Inventario'},{id:'planilla',label:'Historial'}];
-const VIEWS_BARRA    = [{id:'operacion',label:'Cola de barra'},{id:'apertura',label:'Abrir turno'}];
+const VIEWS_BARRA    = [{id:'operacion',label:'Cola de barra'}];
 const VIEWS_MESERO   = [{id:'operacion',label:'Mis comandas'}];
 
 const ROLE_BADGE = {admin:C.amber, administrador:C.amber, auxiliar:C.indigo, jefe:C.green, dueño:C.green, barra:C.amber, mesero:C.indigo};
 
 // Tabs inferiores para móvil (máx 5 visibles + "Más")
-const BOTTOM_ADMIN   = [{id:'dashboard',label:'Inicio',icon:'🏠'},{id:'apertura',label:'Abrir',icon:'🟢'},{id:'planilla',label:'Turno',icon:'📋'},{id:'cierres',label:'Cierres',icon:'📅'},{id:'mas',label:'Más',icon:'⋯'}];
+const BOTTOM_ADMIN   = [{id:'dashboard',label:'Inicio',icon:'🏠'},{id:'planilla',label:'Turno',icon:'📋'},{id:'cierres',label:'Cierres',icon:'📅'},{id:'mas',label:'Más',icon:'⋯'}];
 const BOTTOM_AUXILIAR= [{id:'planilla',label:'Turno',icon:'📋'}];
 const BOTTOM_JEFE    = [{id:'dashboard',label:'Inicio',icon:'🏠'},{id:'planilla',label:'Turno',icon:'📋'},{id:'cierres',label:'Cierres',icon:'📅'},{id:'reportes',label:'Reportes',icon:'📊'},{id:'inventario',label:'Stock',icon:'📦'}];
-const BOTTOM_BARRA   = [{id:'operacion',label:'Cola',icon:'🍸'},{id:'apertura',label:'Abrir',icon:'🟢'}];
+const BOTTOM_BARRA   = [{id:'operacion',label:'Cola',icon:'🍸'}];
 const BOTTOM_MESERO  = [{id:'operacion',label:'Comandas',icon:'🧾'}];
 
 // Menú "Más" para admin en móvil
@@ -191,8 +190,7 @@ export default function MainApp() {
   const mainContent = (
     <>
       {view==='dashboard'  && <Dashboard negocio={negocio}/>}
-      {view==='apertura'   && (isAdmin || role==='barra') && <AbrirTurno negocio={negocio} />}
-      {view==='operacion'  && (role==='barra'||role==='mesero') && <RoleWorkspace role={role} negocio={negocio} userName={user?.name}/>}
+      {view==='operacion'  && (role==='barra'||role==='mesero') && <RoleWorkspace role={role} negocio={negocio} userName={user?.name} userId={user?.id}/>}
       {view==='planilla'   && <Planilla key={negocio?.id} negocio={negocio} onUpdateNegocio={updateNegocio}/>}
       {view==='inventario' && <Inventario negocio={negocio} onUpdateNegocio={updated=>saveAndSync(updated,true)} readOnly={isJefe}/>}
       {view==='gastos'     && isAdmin && <GastosView negocio={negocio}/>}

@@ -36,6 +36,15 @@ table {
   max-width: 100%;
 }
 
+.waiter-order-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid #1e1e3a;
+}
+
 @media (max-width: 768px) {
   .app-mobile {
     width: 100%;
@@ -96,12 +105,48 @@ table {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
-    max-height: 38vh;
+    max-height: 46vh;
     overflow-y: auto;
     margin-bottom: 12px;
+    padding: 2px;
+  }
+
+  .waiter-composer-heading,
+  .waiter-orders-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .waiter-categories {
+    display: flex;
+    gap: 7px;
+    overflow-x: auto;
+    padding: 2px 0 9px;
+    scrollbar-width: thin;
+  }
+
+  .waiter-category {
+    flex: 0 0 auto;
+    min-height: 34px;
+    padding: 6px 11px;
+    border: 1px solid #2a2a4a;
+    border-radius: 999px;
+    background: #111125;
+    color: #a9b1c7;
+    cursor: pointer;
+  }
+
+  .waiter-category.is-active {
+    border-color: #f59e0b;
+    background: #2a1d0b;
+    color: #fbbf24;
   }
 
   .waiter-product {
+    position: relative;
     min-height: 64px;
     padding: 9px;
     border: 1px solid #1e1e3a;
@@ -116,9 +161,48 @@ table {
     cursor: pointer;
   }
 
+  .waiter-product:disabled {
+    cursor: not-allowed;
+    opacity: .45;
+  }
+
+  .waiter-product.is-selected {
+    border-color: #f59e0b;
+    box-shadow: 0 0 0 1px #f59e0b inset;
+  }
+
+  .waiter-product-name {
+    min-height: 30px;
+    font-weight: 600;
+    line-height: 1.2;
+  }
+
   .waiter-product strong {
     color: #34d399;
     font-size: 12px;
+  }
+
+  .waiter-stock {
+    color: #94a3b8;
+    font-size: 11px;
+  }
+
+  .waiter-stock.is-empty {
+    color: #f87171;
+  }
+
+  .waiter-product-count {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    min-width: 21px;
+    padding: 2px 5px;
+    border-radius: 999px;
+    background: #f59e0b;
+    color: #17120a;
+    font-size: 11px;
+    font-weight: 800;
+    text-align: center;
   }
 
   .waiter-cart {
@@ -159,10 +243,132 @@ table {
     padding-top: 10px;
     font-size: 15px;
   }
+
+  .waiter-order-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 0;
+    border-bottom: 1px solid #1e1e3a;
+  }
+
+  .waiter-order-actions {
+    display: flex;
+    gap: 6px;
+  }
 }
 
 @media (min-width: 769px) and (max-width: 1100px) {
   .app-mobile__content {
     padding: 1rem;
+  }
+}
+
+@media (min-width: 769px) {
+  .waiter-products {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
+    gap: 10px;
+    max-height: 410px;
+    overflow-y: auto;
+    margin-bottom: 12px;
+    padding: 2px;
+  }
+
+  .waiter-composer-heading,
+  .waiter-orders-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .waiter-categories {
+    display: flex;
+    gap: 7px;
+    overflow-x: auto;
+    padding: 2px 0 10px;
+  }
+
+  .waiter-category {
+    min-height: 34px;
+    padding: 6px 11px;
+    border: 1px solid #2a2a4a;
+    border-radius: 999px;
+    background: #111125;
+    color: #a9b1c7;
+    cursor: pointer;
+  }
+
+  .waiter-category.is-active {
+    border-color: #f59e0b;
+    background: #2a1d0b;
+    color: #fbbf24;
+  }
+
+  .waiter-product {
+    position: relative;
+    min-height: 105px;
+    padding: 12px;
+    border: 1px solid #1e1e3a;
+    border-radius: 12px;
+    background: #0f0f1c;
+    color: #e2e8f0;
+    text-align: left;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 7px;
+    cursor: pointer;
+  }
+
+  .waiter-product:disabled {
+    cursor: not-allowed;
+    opacity: .45;
+  }
+
+  .waiter-product.is-selected {
+    border-color: #f59e0b;
+    box-shadow: 0 0 0 1px #f59e0b inset;
+  }
+
+  .waiter-product-name {
+    min-height: 30px;
+    font-weight: 600;
+    line-height: 1.2;
+  }
+
+  .waiter-product strong {
+    color: #34d399;
+    font-size: 12px;
+  }
+
+  .waiter-stock {
+    color: #94a3b8;
+    font-size: 11px;
+  }
+
+  .waiter-stock.is-empty {
+    color: #f87171;
+  }
+
+  .waiter-product-count {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    min-width: 22px;
+    padding: 2px 5px;
+    border-radius: 999px;
+    background: #f59e0b;
+    color: #17120a;
+    font-size: 11px;
+    font-weight: 800;
+    text-align: center;
+  }
+
+  .waiter-order-actions {
+    display: flex;
+    gap: 6px;
   }
 }
