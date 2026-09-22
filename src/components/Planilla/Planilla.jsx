@@ -98,9 +98,19 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
   const [viewComandas,setViewComandas] = useState([]);
   const [viewComandaItems,setViewComandaItems] = useState({});
   const [comandasLoading,setComandasLoading] = useState(false);
+  const [viewMeseroFilter,setViewMeseroFilter] = useState('todos');
   const [editingPlatId,setEditingPlatId]     = useState(null); // id de la fila con selector de plataforma abierto
   const [pctBarra,setPctBarra]               = useState(()=>saved().pctBarra??3);
   const [pctMeseros,setPctMeseros]           = useState(()=>saved().pctMeseros??5);
+  const viewMeseros = [...new Map(viewComandas.map(comanda => {
+    const id = comanda.mesero_id || comanda.mesero_nombre || 'sin_mesero';
+    return [id, { id, nombre: comanda.mesero_nombre || comanda.mesero_id || 'Sin mesero' }];
+  }).values())].sort((first, second) => first.nombre.localeCompare(second.nombre, 'es'));
+  const viewComandasVisibles = viewMeseroFilter === 'todos'
+    ? viewComandas
+    : viewComandas.filter(comanda =>
+      (comanda.mesero_id || comanda.mesero_nombre || 'sin_mesero') === viewMeseroFilter
+    );
 
   useEffect(() => {
     let active = true;
@@ -139,6 +149,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
     if (!viewPlanilla) {
       setViewComandas([]);
       setViewComandaItems({});
+      setViewMeseroFilter('todos');
       return undefined;
     }
     let active = true;
@@ -169,6 +180,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
       if (active) {
         setViewComandas(orders);
         setViewComandaItems(groupedItems);
+        setViewMeseroFilter('todos');
         setComandasLoading(false);
       }
     })();
@@ -312,9 +324,18 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
           <div style={{...s.card,marginTop:'1rem'}}>
             <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>🧾 Comandas de esta noche</div>
             <div style={{fontSize:12,color:C.sub,marginBottom:12}}>Solo se muestran las comandas del turno correspondiente a la planilla {viewPlanilla.fecha}.</div>
+            <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:12}}>
+              <label htmlFor="planilla-mesero-filter-jefe" style={{color:C.sub,fontSize:12,fontWeight:600}}>Filtrar por mesero:</label>
+              <select id="planilla-mesero-filter-jefe" style={{...s.sel,minWidth:190,flex:'1 1 190px'}} value={viewMeseroFilter} onChange={event=>setViewMeseroFilter(event.target.value)}>
+                <option value="todos">Todos los meseros</option>
+                {viewMeseros.map(mesero=><option key={mesero.id} value={mesero.id}>{mesero.nombre}</option>)}
+              </select>
+              {viewMeseroFilter!=='todos'&&<button type="button" style={{...s.btn('ghost'),padding:'6px 10px'}} onClick={()=>setViewMeseroFilter('todos')}>Limpiar filtro</button>}
+            </div>
             {comandasLoading&&<div style={{color:C.sub,fontSize:12}}>Cargando comandas...</div>}
             {!comandasLoading&&!viewComandas.length&&<div style={{color:C.sub,fontSize:12}}>No hubo comandas registradas en este turno.</div>}
-            {viewComandas.map(comanda=>{
+            {!comandasLoading&&viewComandas.length>0&&!viewComandasVisibles.length&&<div style={{color:C.sub,fontSize:12}}>No hay comandas de este mesero.</div>}
+            {viewComandasVisibles.map(comanda=>{
               const status=COMANDA_STATUS[comanda.estado]||[comanda.estado,C.sub];
               return <div key={comanda.id} style={{borderTop:`1px solid ${C.border}50`,padding:'10px 0'}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap'}}>
@@ -494,9 +515,18 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
             <div style={{marginTop:'1rem',paddingTop:'1rem',borderTop:`1px solid ${C.border}50`}}>
               <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>🧾 Comandas de esta noche</div>
               <div style={{fontSize:12,color:C.sub,marginBottom:12}}>Solo se muestran las comandas del turno correspondiente a la planilla {viewPlanilla.fecha}.</div>
+              <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:12}}>
+                <label htmlFor="planilla-mesero-filter-admin" style={{color:C.sub,fontSize:12,fontWeight:600}}>Filtrar por mesero:</label>
+                <select id="planilla-mesero-filter-admin" style={{...s.sel,minWidth:190,flex:'1 1 190px'}} value={viewMeseroFilter} onChange={event=>setViewMeseroFilter(event.target.value)}>
+                  <option value="todos">Todos los meseros</option>
+                  {viewMeseros.map(mesero=><option key={mesero.id} value={mesero.id}>{mesero.nombre}</option>)}
+                </select>
+                {viewMeseroFilter!=='todos'&&<button type="button" style={{...s.btn('ghost'),padding:'6px 10px'}} onClick={()=>setViewMeseroFilter('todos')}>Limpiar filtro</button>}
+              </div>
               {comandasLoading&&<div style={{color:C.sub,fontSize:12}}>Cargando comandas...</div>}
               {!comandasLoading&&!viewComandas.length&&<div style={{color:C.sub,fontSize:12}}>No hubo comandas registradas en este turno.</div>}
-              {viewComandas.map(comanda=>{
+              {!comandasLoading&&viewComandas.length>0&&!viewComandasVisibles.length&&<div style={{color:C.sub,fontSize:12}}>No hay comandas de este mesero.</div>}
+              {viewComandasVisibles.map(comanda=>{
                 const status=COMANDA_STATUS[comanda.estado]||[comanda.estado,C.sub];
                 return <div key={comanda.id} style={{borderTop:`1px solid ${C.border}50`,padding:'10px 0'}}>
                   <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap'}}>

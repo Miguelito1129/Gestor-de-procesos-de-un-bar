@@ -50,12 +50,16 @@ export function AuthProvider({ children }) {
   const [user,        setUser]        = useState(null);
   const [users,       setUsers]       = useState([]);
   const [authLoading, setAuthLoading] = useState(true);
+  const [authError,   setAuthError]   = useState('');
 
   useEffect(() => {
     (async () => {
       try {
       let storedUsers = await localFetch('usuarios', 'select=*');
-      if (!storedUsers) throw new Error('No fue posible cargar los usuarios desde la base local.');
+      if (!storedUsers) {
+        setAuthError('No se pudo conectar con el servidor local. Verifica que el celular use la dirección web del equipo servidor.');
+        return;
+      }
       if (!storedUsers.length) {
         let legacyUsers = [];
         const legacyRaw = localStorage.getItem(USERS_KEY);
@@ -110,10 +114,12 @@ export function AuthProvider({ children }) {
   };
 
   const login = async (email, password) => {
+    if (authError) return { error: authError };
     const bf = checkBruteForce(email);
     if (bf.blocked) return { error: bf.message };
 
-    const u = users.find(x => x.email.toLowerCase() === email.toLowerCase().trim());
+    const normalizedEmail = email.trim().toLowerCase();
+    const u = users.find(x => x.email.trim().toLowerCase() === normalizedEmail);
     if (!u) {
       // No revelar si el email existe (timing-safe)
       return { error: 'Credenciales incorrectas.' };
@@ -134,12 +140,13 @@ export function AuthProvider({ children }) {
   const logout = () => { localStorage.removeItem(SESSION_KEY); setUser(null); };
 
   const createUser = async ({ name, email, role, negocios, password }) => {
-    if (users.find(u => u.email.toLowerCase() === email.toLowerCase())) return { error:'Email ya existe' };
+    const normalizedEmail = email.trim().toLowerCase();
+    if (users.find(u => u.email.trim().toLowerCase() === normalizedEmail)) return { error:'Email ya existe' };
     if (!password || password.length < 8) return { error:'Contraseña mínimo 8 caracteres' };
     const salt = genSalt();
     const hash = await hashPwd(password, salt);
     const localPasswordHash = localHash(`${salt}${import.meta.env.VITE_APP_PEPPER || 'GESBAR_PROD_2024_X9mK'}${password}`);
-    await saveUsers([...users, { id:uid(), name, email, role, negocios, passwordHash:hash, passwordHashLocal:localPasswordHash, salt }]);
+    await saveUsers([...users, { id:uid(), name:name.trim(), email:normalizedEmail, role, negocios, passwordHash:hash, passwordHashLocal:localPasswordHash, salt }]);
     return { success: true };
   };
 
@@ -171,7 +178,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthCtx.Provider value={{ user, users, authLoading, login, logout, createUser, updateUser, deleteUser, can, canSeeNeg }}>
+    <AuthCtx.Provider value={{ user, users, authLoading, authError, login, logout, createUser, updateUser, deleteUser, can, canSeeNeg }}>
       {children}
     </AuthCtx.Provider>
   );

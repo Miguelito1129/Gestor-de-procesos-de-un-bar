@@ -4,7 +4,7 @@ import { C, s } from "../../constants/theme.js";
 import { Badge } from "../common/index.jsx";
 
 export default function LoginScreen() {
-  const { login } = useAuth();
+  const { login, authError } = useAuth();
   const [email,   setEmail]   = useState('');
   const [pwd,     setPwd]     = useState('');
   const [err,     setErr]     = useState('');
@@ -51,9 +51,9 @@ export default function LoginScreen() {
             </div>
           </div>
 
-          {err && (
+          {(err || authError) && (
             <div style={{background:C.red+'20',border:`1px solid ${C.red}40`,borderRadius:8,padding:'8px 12px',fontSize:12,color:C.red,marginBottom:12}}>
-              {err}
+              {err || authError}
             </div>
           )}
 

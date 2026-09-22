@@ -26,8 +26,16 @@ export default function BarraWorkspace({ negocio, userName }) {
   const [busy, setBusy] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [itemDetails, setItemDetails] = useState({});
-  const pending = comandas.filter(comanda => comanda.estado === "enviada").length;
-  const ventasTotal = comandas.reduce((sum, comanda) => sum + Number(comanda.total || 0), 0);
+  const [meseroFilter, setMeseroFilter] = useState("todos");
+  const meseros = [...new Map(comandas.map(comanda => {
+    const id = comanda.mesero_id || comanda.mesero_nombre || "sin_mesero";
+    return [id, { id, nombre: comanda.mesero_nombre || comanda.mesero_id || "Sin mesero" }];
+  }).values())].sort((first, second) => first.nombre.localeCompare(second.nombre, "es"));
+  const comandasVisibles = meseroFilter === "todos"
+    ? comandas
+    : comandas.filter(comanda => (comanda.mesero_id || comanda.mesero_nombre || "sin_mesero") === meseroFilter);
+  const pending = comandasVisibles.filter(comanda => comanda.estado === "enviada").length;
+  const ventasTotal = comandasVisibles.reduce((sum, comanda) => sum + Number(comanda.total || 0), 0);
 
   const getStockCheck = comanda => {
     const details = itemDetails[comanda.id] || [];
@@ -179,10 +187,28 @@ export default function BarraWorkspace({ negocio, userName }) {
           <div style={{ fontWeight: 700, flex: 1 }}>Comandas</div>
           <span style={{ color: C.sub, fontSize: 12 }}>La barra entrega; el mesero confirma el pago.</span>
         </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+          <label htmlFor="barra-mesero-filter" style={{ color: C.sub, fontSize: 12, fontWeight: 600 }}>Filtrar por mesero:</label>
+          <select
+            id="barra-mesero-filter"
+            style={{ ...s.sel, minWidth: 190, flex: "1 1 190px" }}
+            value={meseroFilter}
+            onChange={event => setMeseroFilter(event.target.value)}
+          >
+            <option value="todos">Todos los meseros</option>
+            {meseros.map(mesero => <option key={mesero.id} value={mesero.id}>{mesero.nombre}</option>)}
+          </select>
+          {meseroFilter !== "todos" && (
+            <button type="button" style={{ ...s.btn("ghost"), padding: "6px 10px" }} onClick={() => setMeseroFilter("todos")}>
+              Limpiar filtro
+            </button>
+          )}
+        </div>
         {message && <div style={{ color: message.startsWith("✓") ? C.green : C.red, fontSize: 12, marginBottom: 10 }}>{message}</div>}
         {!turno && <p style={{ color: C.sub, fontSize: 13 }}>No hay turno abierto.</p>}
         {turno && comandas.length === 0 && <p style={{ color: C.sub, fontSize: 13 }}>Sin comandas en este turno.</p>}
-        {comandas.map(comanda => (
+        {turno && comandas.length > 0 && comandasVisibles.length === 0 && <p style={{ color: C.sub, fontSize: 13 }}>No hay comandas de este mesero.</p>}
+        {comandasVisibles.map(comanda => (
           <div key={comanda.id} className="waiter-order-row">
             {(() => {
               const stockCheck = getStockCheck(comanda);
