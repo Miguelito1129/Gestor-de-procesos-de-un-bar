@@ -9,7 +9,7 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('Todos');
   const [showAdd, setShowAdd] = useState(false);
-  const [f, setF] = useState({name:'',cat:'Cerveza',price:'',stock:'',min:'',courtesy:''});
+  const [f, setF] = useState({name:'',cat:'Cerveza',price:'',stock:'',min:''});
   const [importMsg, setImportMsg] = useState('');
   const [showConfirmBorrar, setShowConfirmBorrar] = useState(false);
   const fileRef = useRef(null);
@@ -51,7 +51,7 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
   const downloadInventario = async () => {
     if (!productos.length){setImportMsg('⚠ No hay productos para exportar.');return;}
     const XLSX = await loadXLSX();
-    const data = productos.map(p=>({nombre:p.name,categoria:p.cat,precio:p.price,stock:p.stock,minimo:p.min,cortesia:p.courtesy||''}));
+    const data = productos.map(p=>({nombre:p.name,categoria:p.cat,precio:p.price,stock:p.stock,minimo:p.min}));
     const ws = XLSX.utils.json_to_sheet(data);
     ws['!cols'] = [{wch:28},{wch:15},{wch:12},{wch:8},{wch:8},{wch:12}];
     const wb = XLSX.utils.book_new();
@@ -88,7 +88,6 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
         price:parseInt(g(row,'precio','Precio','PRECIO','price','Price','valor','Valor'))||0,
         stock:parseInt(g(row,'stock','Stock','STOCK','existencia','Existencia','cantidad','Cantidad'))||0,
         min:parseInt(g(row,'minimo','Minimo','MINIMO','mínimo','Mínimo','min','Min','stock_minimo','StockMinimo','minimum'))||0,
-        courtesy:String(g(row,'cortesia','Cortesia','CORTESIA','cortesía','Cortesía','courtesy','Courtesy')||'').trim()||null,
       })).filter(p=>p.name.length>0);
       if(!newP.length){
         const cols=Object.keys(rows[0]||{}).join(', ');
@@ -159,7 +158,7 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
         </div>
       )}
 
-      {!readOnly&&<div style={{marginBottom:'0.75rem',padding:'7px 12px',background:C.surface,borderRadius:8,fontSize:11,color:C.sub,border:`1px solid ${C.border}`}}>📋 <strong style={{color:C.text}}>Formato Excel:</strong> columnas <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>nombre</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>categoria</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>precio</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>stock</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>minimo</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>cortesia</code></div>}
+      {!readOnly&&<div style={{marginBottom:'0.75rem',padding:'7px 12px',background:C.surface,borderRadius:8,fontSize:11,color:C.sub,border:`1px solid ${C.border}`}}>📋 <strong style={{color:C.text}}>Formato Excel:</strong> columnas <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>nombre</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>categoria</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>precio</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>stock</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>minimo</code></div>}
 
       <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:'1.25rem'}}>
         <Metric label="Total"    value={productos.length}/>
@@ -178,7 +177,6 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
                 {Object.keys(CAT_COLORS).map(c=><option key={c}>{c}</option>)}
               </select>
             </div>
-            <div><div style={s.label}>Cortesía</div><input style={s.inp} placeholder="agua/gatorade/gaseosa" value={f.courtesy} onChange={e=>setF(p=>({...p,courtesy:e.target.value}))}/></div>
             <div><div style={s.label}>Precio</div><input style={s.inp} type="number" value={f.price} onChange={e=>setF(p=>({...p,price:e.target.value}))}/></div>
             <div><div style={s.label}>Stock</div><input style={s.inp} type="number" value={f.stock} onChange={e=>setF(p=>({...p,stock:e.target.value}))}/></div>
             <div><div style={s.label}>Mínimo</div><input style={s.inp} type="number" value={f.min} onChange={e=>setF(p=>({...p,min:e.target.value}))}/></div>
@@ -186,7 +184,7 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
           <div style={{marginTop:10,display:'flex',gap:8}}>
             <button style={s.btn('primary')} onClick={()=>{
               if(!f.name) return;
-              setProductos(p=>[...p,{...f,id:uid(),sort_order:p.length,price:parseInt(f.price)||0,stock:parseInt(f.stock)||0,min:parseInt(f.min)||0,courtesy:f.courtesy||null}]);
+              setProductos(p=>[...p,{...f,id:uid(),sort_order:p.length,price:parseInt(f.price)||0,stock:parseInt(f.stock)||0,min:parseInt(f.min)||0}]);
               setShowAdd(false);
             }}>Guardar</button>
             <button style={s.btn()} onClick={()=>setShowAdd(false)}>Cancelar</button>
@@ -196,9 +194,9 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
 
       <div style={s.card}>
         <table style={{width:'100%',borderCollapse:'collapse'}}>
-          <thead><tr style={{background:C.surface}}>{['Producto','Cat.','Precio','Cortesía','Stock','Mín.','Estado',''].map(h=><th key={h} style={s.th}>{h}</th>)}</tr></thead>
+          <thead><tr style={{background:C.surface}}>{['Producto','Cat.','Precio','Stock','Mín.','Estado',''].map(h=><th key={h} style={s.th}>{h}</th>)}</tr></thead>
           <tbody>
-            {filtered.length===0?(<tr><td colSpan={8} style={{padding:'2rem',textAlign:'center',color:C.sub,fontSize:13}}>Sin productos</td></tr>):
+            {filtered.length===0?(<tr><td colSpan={7} style={{padding:'2rem',textAlign:'center',color:C.sub,fontSize:13}}>Sin productos</td></tr>):
             filtered.map((p,i)=>{
               const out=p.stock===0&&p.min>0; const lowS=p.stock<=p.min&&!out&&p.min>0;
               const bg=out?C.red+'0a':lowS?C.amber+'08':i%2===0?C.rowA:C.rowB;
@@ -212,7 +210,6 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
                       : <input type="number" min="0" style={{...s.inp,width:110,padding:'4px 8px',textAlign:'right',fontSize:12}} value={p.price} onChange={e=>setProductos(prev=>prev.map(x=>x.id===p.id?{...x,price:Math.max(0,parseInt(e.target.value)||0)}:x))}/>
                     }
                   </td>
-                  <td style={{...s.td(i),background:bg}}>{p.courtesy?<Badge color={C.purple} small>+{p.courtesy}</Badge>:<span style={{color:C.muted,fontSize:11}}>—</span>}</td>
                   <td style={{...s.td(i),background:bg}}>
                     {readOnly?<span style={{fontWeight:800,fontSize:14,color:out?C.red:lowS?C.amber:C.green}}>{p.stock}</span>:(
                       <input type="number" min="0" style={{...s.inp,width:72,padding:'4px 8px',textAlign:'center',fontWeight:800,fontSize:13,color:out?C.red:lowS?C.amber:C.green,border:`1px solid ${out?C.red:lowS?C.amber:C.border}60`}} value={p.stock} onChange={e=>setProductos(prev=>prev.map(x=>x.id===p.id?{...x,stock:Math.max(0,parseInt(e.target.value)||0)}:x))}/>

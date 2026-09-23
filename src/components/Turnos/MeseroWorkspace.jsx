@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { C, s, COP } from "../../constants/theme.js";
 import {
   localDelete,
@@ -42,6 +42,15 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
   const [paymentMethods, setPaymentMethods] = useState({});
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [promociones, setPromociones] = useState([]);
+
+  useEffect(() => {
+    let active = true;
+    localFetch("promociones", `negocio_id=eq.${negocio.id}&activo=eq.true&select=*`).then(rows => {
+      if (active) setPromociones(rows || []);
+    });
+    return () => { active = false; };
+  }, [negocio.id]);
 
   const categories = useMemo(
     () => [
@@ -70,11 +79,22 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
     });
   }, [productos, productSearch, selectedCategory]);
 
-  const cartTotal = items.reduce(
-    (sum, item) =>
-      sum + Number(item.precio_unitario || 0) * Number(item.cantidad || 0),
-    0
+  const getPromotion = productId => promociones.find(promotion =>
+    ["2x1", "precio_especial"].includes(promotion.tipo) && promotion.producto_principal_id === productId
   );
+
+  const itemDiscount = item => {
+    const promotion = getPromotion(item.producto_id);
+    if (!promotion) return Number(item.comboDiscount || 0);
+    const unitPrice = Number(item.precio_unitario || 0);
+    if (promotion.tipo === "precio_especial") return Math.max(0, unitPrice - Number(promotion.precio_promocional || 0)) * Number(item.cantidad || 0) + Number(item.comboDiscount || 0);
+    const groupSize = Math.max(2, Number(promotion.cantidad_compra) || 2);
+    return Math.floor(Number(item.cantidad || 0) / groupSize) * (groupSize - 1) * unitPrice + Number(item.comboDiscount || 0);
+  };
+
+  const itemTotal = item => Number(item.precio_unitario || 0) * Number(item.cantidad || 0) - itemDiscount(item);
+
+  const cartTotal = items.reduce((sum, item) => sum + itemTotal(item), 0);
 
   const itemsCount = items.reduce(
     (sum, item) => sum + Number(item.cantidad || 0),
@@ -88,6 +108,10 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
 
   const pendingOrders = comandas.filter(
     comanda => comanda.estado === "enviada"
+  ).length;
+
+  const availableProducts = visibleProducts.filter(
+    product => Number(product.stock || 0) > 0
   ).length;
 
   const addItem = product => {
@@ -148,6 +172,47 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
     setItems(current =>
       current.filter(item => item.producto_id !== productId)
     );
+  };
+
+  const promotionItems = promotion => {
+    if (Array.isArray(promotion.productos_combo)) return promotion.productos_combo;
+    try { return JSON.parse(promotion.productos_combo || "[]"); } catch { return []; }
+  };
+
+  const addPromotion = promotion => {
+    const components = promotion.tipo === "combo"
+      ? promotionItems(promotion)
+      : [
+        { producto_id: promotion.producto_principal_id, cantidad: promotion.cantidad_compra || 1 },
+        ...(promotion.tipo === "cortesia" && promotion.producto_cortesia_id
+          ? [{ producto_id: promotion.producto_cortesia_id, cantidad: promotion.cantidad_cortesia || 1, cortesia: true }]
+          : []),
+      ];
+    if (busy || !components.length || (promotion.tipo === "combo" && components.length < 2)) return;
+    const valid = components.every(component => {
+      const product = productos.find(item => item.id === component.producto_id);
+      const alreadyInCart = items.find(item => item.producto_id === component.producto_id)?.cantidad || 0;
+      return product && Number(product.stock || 0) >= alreadyInCart + Number(component.cantidad || 0);
+    });
+    if (!valid) { setMessage("No hay existencias suficientes para agregar este combo."); return; }
+    const regularTotal = components.reduce((sum, component) => sum + Number(component.cantidad || 0) * Number(productos.find(item => item.id === component.producto_id)?.price || 0), 0);
+    const discount = promotion.tipo === "combo"
+      ? Math.max(0, regularTotal - Number(promotion.precio_promocional || 0))
+      : 0;
+    setItems(current => {
+      const next = current.map(item => ({ ...item }));
+      components.forEach((component, index) => {
+        const product = productos.find(item => item.id === component.producto_id);
+        const existing = next.find(item => item.producto_id === component.producto_id);
+        if (existing) {
+          existing.cantidad += Number(component.cantidad || 0);
+          if (index === 0) existing.comboDiscount = Number(existing.comboDiscount || 0) + discount;
+          if (component.cortesia) existing.comboDiscount = Number(existing.comboDiscount || 0) + Number(component.cantidad || 0) * Number(product.price || 0);
+        } else next.push({ producto_id: product.id, nombre: product.name, cantidad: Number(component.cantidad || 0), precio_unitario: Number(product.price || 0), comboDiscount: index === 0 ? discount : component.cortesia ? Number(component.cantidad || 0) * Number(product.price || 0) : 0 });
+      });
+      return next;
+    });
+    setMessage(`✓ ${promotion.nombre} agregado al pedido.`);
   };
 
   const clearComposer = () => {
@@ -247,6 +312,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
       const payload = {
         cantidad: item.cantidad,
         precio_unitario: item.precio_unitario,
+        descuento: itemDiscount(item),
       };
 
       const ok = item.id
@@ -261,6 +327,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
             producto_id: item.producto_id,
             cantidad: item.cantidad,
             precio_unitario: item.precio_unitario,
+            descuento: itemDiscount(item),
           });
 
       if (!ok) return false;
@@ -382,6 +449,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
           producto_id: item.producto_id,
           cantidad: item.cantidad,
           precio_unitario: item.precio_unitario,
+          descuento: itemDiscount(item),
         }))
       ));
 
@@ -573,6 +641,20 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
         />
       </div>
 
+      {promociones.length > 0 && (
+        <div className="waiter-promotions">
+          <div className="waiter-promotions__title">🏷️ Promociones activas</div>
+          <div className="waiter-promotions__list">
+            {promociones.map(promotion => {
+              const main = productos.find(product => product.id === promotion.producto_principal_id)?.name || "Producto";
+              const combo = promotion.tipo === "combo" ? promotionItems(promotion).map(item => `${item.cantidad}× ${productos.find(product => product.id === item.producto_id)?.name || "Producto"}`).join(" + ") : "";
+              const text = promotion.tipo === "2x1" ? `${main}: lleva ${promotion.cantidad_compra || 2}, paga 1` : promotion.tipo === "precio_especial" ? `${main}: ${COP(promotion.precio_promocional)}` : promotion.tipo === "combo" ? `${combo} · ${COP(promotion.precio_promocional)}` : `${main} + cortesía`;
+              return <div key={promotion.id} className="waiter-promotion"><strong>{promotion.tipo === "combo" ? "🍻 Combo" : promotion.tipo === "cortesia" ? "🎁 Cortesía" : promotion.tipo === "2x1" ? "2×1" : "Precio especial"}</strong><span>{promotion.nombre} · {text}</span><button type="button" disabled={busy} onClick={() => addPromotion(promotion)}>Agregar</button></div>;
+            })}
+          </div>
+        </div>
+      )}
+
       {/* COMPOSITOR */}
       <div
         style={{
@@ -749,7 +831,19 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
           </div>
 
           {/* PRODUCTOS */}
+          <div className="waiter-catalogue-summary">
+            <div>
+              <strong>Inventario disponible</strong>
+              <span>{availableProducts} de {visibleProducts.length} productos para pedir</span>
+            </div>
+            <div className="waiter-catalogue-legend">
+              <span><i className="is-available" />Disponible</span>
+              <span><i className="is-low" />Pocas unidades</span>
+              <span><i className="is-empty" />Agotado</span>
+            </div>
+          </div>
           <div
+            className="waiter-product-grid"
             style={{
               display: "grid",
               gridTemplateColumns:
@@ -768,6 +862,8 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
               );
 
               const outOfStock = stock < 1;
+              const lowStock = !outOfStock && stock <= 3;
+              const promotion = getPromotion(product.id);
 
               return (
                 <button
@@ -789,8 +885,8 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                       ? `2px solid ${C.green}`
                       : "1px solid rgba(255,255,255,.09)",
                     background: selected
-                      ? "rgba(0,210,100,.09)"
-                      : "rgba(255,255,255,.025)",
+                      ? "linear-gradient(145deg, rgba(0,210,100,.16), rgba(0,210,100,.045))"
+                      : "linear-gradient(145deg, rgba(255,255,255,.055), rgba(255,255,255,.018))",
                     opacity: outOfStock
                       ? 0.45
                       : 1,
@@ -831,10 +927,16 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                     </span>
                   )}
 
+                  {promotion && (
+                    <span style={{ position: "absolute", top: 9, left: 9, padding: "3px 6px", borderRadius: 6, background: "rgba(129,140,248,.22)", color: "#c7d2fe", fontSize: 9, fontWeight: 900 }}>
+                      {promotion.tipo === "2x1" ? "2×1" : "Oferta"}
+                    </span>
+                  )}
+
                   <div
                     style={{
-                      paddingRight:
-                        selected ? 28 : 0,
+                      paddingRight: selected ? 28 : 0,
+                      paddingTop: promotion ? 20 : 0,
                     }}
                   >
                     <div
@@ -843,6 +945,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                         fontSize: 14,
                         lineHeight: 1.25,
                         minHeight: 36,
+                        color: "#ffffff",
                       }}
                     >
                       {product.name}
@@ -851,7 +954,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                     {product.cat && (
                       <div
                         style={{
-                          color: C.sub,
+                          color: "#d1d5db",
                           fontSize: 10,
                           marginTop: 4,
                         }}
@@ -872,18 +975,9 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                       {COP(product.price)}
                     </div>
 
-                    <div
-                      style={{
-                        color: outOfStock
-                          ? C.red
-                          : C.sub,
-                        fontSize: 10,
-                        marginTop: 3,
-                      }}
-                    >
-                      {outOfStock
-                        ? "Agotado"
-                        : `${stock} disponibles`}
+                    <div className={`waiter-product-stock ${outOfStock ? "is-empty" : lowStock ? "is-low" : "is-available"}`}>
+                      <i />
+                      {outOfStock ? "Agotado" : lowStock ? `Solo ${stock} unidades` : `${stock} disponibles`}
                     </div>
                   </div>
                 </button>
@@ -1135,10 +1229,8 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                         marginTop: -5,
                       }}
                     >
-                      {COP(
-                        item.precio_unitario *
-                          item.cantidad
-                      )}
+                      {itemDiscount(item) > 0 && <span style={{ color: C.purple, marginRight: 7, fontSize: 10 }}>Promoción aplicada</span>}
+                      {COP(itemTotal(item))}
                     </div>
                   </div>
                 ))}

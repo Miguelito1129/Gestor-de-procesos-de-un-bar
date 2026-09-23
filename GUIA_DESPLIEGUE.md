@@ -1,4 +1,21 @@
-# GestiónBar - servidor local
+# GestiónBar - guía de montaje y uso
+
+## Requisitos
+
+- Node.js 18 o superior (se recomienda la versión LTS).
+- npm incluido con Node.js.
+- Para acceso desde celular: computador y celular conectados a la misma red Wi-Fi.
+
+## Instalación inicial
+
+Abre PowerShell o una terminal en la carpeta del proyecto y ejecuta:
+
+```bash
+npm install
+```
+
+La base SQLite se crea automáticamente en `backend/data/gestionbar.sqlite`.
+No es necesario instalar SQLite por separado.
 
 ## Arquitectura
 
@@ -7,6 +24,36 @@
 - Base de datos: SQLite local en `backend/data/gestionbar.sqlite`.
 - Red: los celulares, tablets y computadores acceden al servidor por la IP local del equipo servidor.
 - El navegador nunca accede directamente al archivo SQLite.
+
+## Inicio recomendado
+
+Para que cualquier persona pueda compilar y arrancar la aplicación con un solo comando:
+
+```bash
+npm start
+```
+
+Este comando compila React, inicia Express y sirve la aplicación junto con la API
+SQLite. Luego abre:
+
+```text
+http://localhost:3000
+```
+
+Para entrar desde un celular u otro equipo de la red, consulta la IP del computador
+servidor y abre:
+
+```text
+http://IP_DEL_SERVIDOR:3000
+```
+
+Ejemplo:
+
+```text
+http://192.168.1.20:3000
+```
+
+No uses `localhost` desde el celular: allí `localhost` apunta al propio celular.
 
 ## Inicio en desarrollo
 

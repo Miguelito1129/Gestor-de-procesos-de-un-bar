@@ -15,6 +15,7 @@ import CierreSemanal    from "./CierreSemanal/CierreSemanal.jsx";
 import Reports          from "./Reports/Reports.jsx";
 import ChatbotIA        from "./ChatbotIA/ChatbotIA.jsx";
 import UserMgmt         from "./Users/UserMgmt.jsx";
+import Promociones      from "./Promociones/Promociones.jsx";
 import NuevoNegocioModal from "./NuevoNegocioModal.jsx";
 import RoleWorkspace    from "./RoleWorkspace/RoleWorkspace.jsx";
 
@@ -36,7 +37,7 @@ const INIT_NEGOCIOS = []; /*
     planillas:[{id:"h5",fecha:"2026-03-21",apertura:"21:30",cierre:"05:00",ventas:10355000,gastos:825000,bancos:3494000,extras:0,pendientes:0,personal:1692000,neto:8663000,novedades:""},{id:"h6",fecha:"2026-03-20",apertura:"20:00",cierre:"04:30",ventas:4450000,gastos:400000,bancos:1200000,extras:0,pendientes:0,personal:950000,neto:3625000,novedades:""},{id:"h7",fecha:"2026-03-19",apertura:"21:00",cierre:"04:00",ventas:5470000,gastos:512000,bancos:1800000,extras:0,pendientes:0,personal:1000000,neto:3454000,novedades:""}] },
 */ 
 
-const VIEWS_ADMIN    = [{id:'dashboard',label:'Dashboard'},{id:'planilla',label:'Planillas'},{id:'inventario',label:'Inventario'},{id:'gastos',label:'Gastos'},{id:'cierres',label:'📅 Cierres'},{id:'reportes',label:'📊 Reportes'},{id:'chat',label:'✦ IA'},{id:'usuarios',label:'👤 Usuarios'}];
+const VIEWS_ADMIN    = [{id:'dashboard',label:'Dashboard'},{id:'planilla',label:'Planillas'},{id:'inventario',label:'Inventario'},{id:'promociones',label:'🏷️ Promociones'},{id:'gastos',label:'Gastos'},{id:'cierres',label:'📅 Cierres'},{id:'reportes',label:'📊 Reportes'},{id:'chat',label:'✦ IA'},{id:'usuarios',label:'👤 Usuarios'}];
 const VIEWS_ADMIN_TURNO = [{id:'planilla',label:'Turno'}];
 const VIEWS_DUENO    = [{id:'dashboard',label:'Dashboard'},{id:'cierres',label:'📅 Cierres'},{id:'reportes',label:'📊 Reportes'},{id:'inventario',label:'Inventario'},{id:'planilla',label:'Historial'}];
 const VIEWS_BARRA    = [{id:'operacion',label:'Cola de barra'}];
@@ -52,7 +53,7 @@ const BOTTOM_BARRA   = [{id:'operacion',label:'Cola',icon:'🍸'}];
 const BOTTOM_MESERO  = [{id:'operacion',label:'Comandas',icon:'🧾'}];
 
 // Menú "Más" para admin en móvil
-const MAS_ADMIN = [{id:'inventario',label:'Inventario',icon:'📦'},{id:'gastos',label:'Gastos',icon:'💸'},{id:'reportes',label:'Reportes',icon:'📊'},{id:'chat',label:'Asistente IA',icon:'✦'},{id:'usuarios',label:'Usuarios',icon:'👤'}];
+const MAS_ADMIN = [{id:'inventario',label:'Inventario',icon:'📦'},{id:'promociones',label:'Promociones',icon:'🏷️'},{id:'gastos',label:'Gastos',icon:'💸'},{id:'reportes',label:'Reportes',icon:'📊'},{id:'chat',label:'Asistente IA',icon:'✦'},{id:'usuarios',label:'Usuarios',icon:'👤'}];
 
 export default function MainApp() {
   const { user, logout } = useAuth();
@@ -193,6 +194,7 @@ export default function MainApp() {
       {view==='operacion'  && (role==='barra'||role==='mesero') && <RoleWorkspace role={role} negocio={negocio} userName={user?.name} userId={user?.id}/>}
       {view==='planilla'   && <Planilla key={negocio?.id} negocio={negocio} onUpdateNegocio={updateNegocio}/>}
       {view==='inventario' && <Inventario negocio={negocio} onUpdateNegocio={updated=>saveAndSync(updated,true)} readOnly={isJefe}/>}
+      {view==='promociones' && isAdmin && <Promociones negocio={negocio}/>}
       {view==='gastos'     && isAdmin && <GastosView negocio={negocio}/>}
       {view==='cierres'    && <CierreSemanal negocios={visibleNegs} negocioId={negocioId}/>}
       {view==='reportes'   && <Reports negocios={visibleNegs}/>}

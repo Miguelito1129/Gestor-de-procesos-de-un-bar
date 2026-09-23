@@ -34,6 +34,9 @@ export default function BarraWorkspace({ negocio, userName }) {
   const comandasVisibles = meseroFilter === "todos"
     ? comandas
     : comandas.filter(comanda => (comanda.mesero_id || comanda.mesero_nombre || "sin_mesero") === meseroFilter);
+  const comandasPorMesero = meseroId => comandas.filter(comanda =>
+    (comanda.mesero_id || comanda.mesero_nombre || "sin_mesero") === meseroId
+  ).length;
   const pending = comandasVisibles.filter(comanda => comanda.estado === "enviada").length;
   const ventasTotal = comandasVisibles.reduce((sum, comanda) => sum + Number(comanda.total || 0), 0);
 
@@ -79,10 +82,21 @@ export default function BarraWorkspace({ negocio, userName }) {
     if (busy || comanda.estado !== "enviada") return;
     setBusy(true);
     setMessage("");
-    const details = await localFetch("comanda_items", `comanda_id=eq.${comanda.id}&select=*`);
-    const insufficient = (details || []).some(detail => {
-      const product = productos.find(item => item.id === detail.producto_id);
-      return !product || Number(product.stock) < Number(detail.cantidad);
+    const [details, promociones] = await Promise.all([
+      localFetch("comanda_items", `comanda_id=eq.${comanda.id}&select=*`),
+      localFetch("promociones", `negocio_id=eq.${negocio.id}&activo=eq.true&select=*`),
+    ]);
+    const deductions = new Map();
+    (details || []).forEach(detail => deductions.set(detail.producto_id, Number(detail.cantidad || 0)));
+    (details || []).forEach(detail => {
+      (promociones || []).filter(promotion => promotion.tipo === "cortesia" && promotion.producto_principal_id === detail.producto_id).forEach(promotion => {
+        const quantity = Number(detail.cantidad || 0) * Math.max(1, Number(promotion.cantidad_cortesia) || 1);
+        deductions.set(promotion.producto_cortesia_id, (deductions.get(promotion.producto_cortesia_id) || 0) + quantity);
+      });
+    });
+    const insufficient = [...deductions].some(([productId, quantity]) => {
+      const product = productos.find(item => item.id === productId);
+      return !product || Number(product.stock) < quantity;
     });
     if (insufficient) {
       setMessage("Stock insuficiente para despachar esta comanda.");
@@ -90,13 +104,13 @@ export default function BarraWorkspace({ negocio, userName }) {
       return;
     }
     const results = [];
-    for (const detail of details || []) {
-      const product = productos.find(item => item.id === detail.producto_id);
-      const newStock = Number(product.stock) - Number(detail.cantidad);
+    for (const [productId, quantity] of deductions) {
+      const product = productos.find(item => item.id === productId);
+      const newStock = Number(product.stock) - quantity;
       const stockOk = await localUpdate("productos", { id: product.id }, { stock: newStock });
       const movOk = await localInsert("movimientos_inventario", {
         id: uid(), negocio_id: negocio.id, turno_id: turno.id, producto_id: product.id,
-        tipo: "venta", cantidad: -Number(detail.cantidad), motivo: `Comanda ${comanda.id}`,
+        tipo: "venta", cantidad: -quantity, motivo: `Comanda ${comanda.id}`,
       });
       results.push({ productoId: product.id, newStock, ok: stockOk && movOk });
     }
@@ -187,22 +201,30 @@ export default function BarraWorkspace({ negocio, userName }) {
           <div style={{ fontWeight: 700, flex: 1 }}>Comandas</div>
           <span style={{ color: C.sub, fontSize: 12 }}>La barra entrega; el mesero confirma el pago.</span>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-          <label htmlFor="barra-mesero-filter" style={{ color: C.sub, fontSize: 12, fontWeight: 600 }}>Filtrar por mesero:</label>
-          <select
-            id="barra-mesero-filter"
-            style={{ ...s.sel, minWidth: 190, flex: "1 1 190px" }}
-            value={meseroFilter}
-            onChange={event => setMeseroFilter(event.target.value)}
-          >
-            <option value="todos">Todos los meseros</option>
-            {meseros.map(mesero => <option key={mesero.id} value={mesero.id}>{mesero.nombre}</option>)}
-          </select>
-          {meseroFilter !== "todos" && (
-            <button type="button" style={{ ...s.btn("ghost"), padding: "6px 10px" }} onClick={() => setMeseroFilter("todos")}>
-              Limpiar filtro
+        <div className="barra-waiter-filter">
+          <div className="barra-waiter-filter__label">
+            <span>Vista por mesero</span>
+            <span>{comandasVisibles.length} comandas</span>
+          </div>
+          <div className="barra-waiter-filter__chips" role="group" aria-label="Filtrar comandas por mesero">
+            <button
+              type="button"
+              className={`barra-waiter-chip ${meseroFilter === "todos" ? "is-active" : ""}`}
+              onClick={() => setMeseroFilter("todos")}
+            >
+              <span>Todos</span><b>{comandas.length}</b>
             </button>
-          )}
+            {meseros.map(mesero => (
+              <button
+                key={mesero.id}
+                type="button"
+                className={`barra-waiter-chip ${meseroFilter === mesero.id ? "is-active" : ""}`}
+                onClick={() => setMeseroFilter(mesero.id)}
+              >
+                <span>{mesero.nombre}</span><b>{comandasPorMesero(mesero.id)}</b>
+              </button>
+            ))}
+          </div>
         </div>
         {message && <div style={{ color: message.startsWith("✓") ? C.green : C.red, fontSize: 12, marginBottom: 10 }}>{message}</div>}
         {!turno && <p style={{ color: C.sub, fontSize: 13 }}>No hay turno abierto.</p>}

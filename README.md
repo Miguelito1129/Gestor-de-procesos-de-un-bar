@@ -1,4 +1,22 @@
-# React + Vite
+# GestiónBar
+
+Aplicación web para administrar turnos, inventario, comandas, pagos y promociones
+de un bar. Usa React/Vite en el frontend, Express en la API y SQLite como base de
+datos local.
+
+## Puesta en marcha rápida
+
+Requiere Node.js 18 o superior.
+
+```bash
+npm install
+npm start
+```
+
+Después abre `http://localhost:3000`. Para usar la aplicación desde un celular,
+abre `http://IP_DEL_SERVIDOR:3000` desde la misma red Wi-Fi.
+
+La guía completa está en [GUIA_DESPLIEGUE.md](./GUIA_DESPLIEGUE.md).
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 

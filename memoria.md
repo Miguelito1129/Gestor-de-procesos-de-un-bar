@@ -153,6 +153,9 @@ La compilación fue validada con `npm run build`.
 - La entrada urgente de inventario de barra quedó dentro de un panel desplegable. La autorización de una comanda descuenta inventario y la deja como `entregada_falta_pago`; el mesero confirma `pago recibido` o mantiene `falta pago`, y solo la confirmación positiva cambia el estado a `pagada`.
 - Administración tiene una vista de Comandas con filtro por estado, productos y marcas de tiempo de creación, autorización, entrega y pago.
 - Al confirmar el pago, el mesero debe seleccionar efectivo, tarjeta o transferencia. El medio se guarda en `comandas.modo_pago` y `pagos.tipo`; transferencia queda registrada localmente como preparación para la futura integración API.
+- Se retiró la asociación automática heredada de productos a agua, Gatorade o gaseosa desde el cierre de Planillas. Las relaciones comerciales ahora se administran en el módulo **Promociones** del administrador y se guardan en SQLite (`promociones`).
+- Promociones permite crear, activar, pausar y eliminar reglas 2×1 y producto + cortesía. Un 2×1 cobra una unidad por cada dos solicitadas, pero descuenta las dos del inventario; una promoción de cortesía descuenta el producto vinculado al autorizar la comanda en Barra.
+- Las promociones de cortesía solo permiten asociar Agua, Gatorade o Gaseosa. El módulo también admite precio especial y combos de varios productos/cantidades con precio único; las promociones activas se muestran al mesero y los combos se agregan directamente a su carrito.
 
 ### Adaptación responsive
 

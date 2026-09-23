@@ -18,6 +18,31 @@ const formatComandaTime = value => value
   ? new Date(value).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })
   : '—';
 
+function ComandaMeseroFilter({ meseros, comandas, selected, onChange }) {
+  const countFor = meseroId => comandas.filter(comanda =>
+    (comanda.mesero_id || comanda.mesero_nombre || 'sin_mesero') === meseroId
+  ).length;
+
+  return (
+    <div className="barra-waiter-filter planilla-comanda-filter">
+      <div className="barra-waiter-filter__label">
+        <span>Comandas por mesero</span>
+        <span>{selected === 'todos' ? comandas.length : countFor(selected)} comandas</span>
+      </div>
+      <div className="barra-waiter-filter__chips" role="group" aria-label="Filtrar comandas por mesero">
+        <button type="button" className={`barra-waiter-chip ${selected === 'todos' ? 'is-active' : ''}`} onClick={() => onChange('todos')}>
+          <span>Todos</span><b>{comandas.length}</b>
+        </button>
+        {meseros.map(mesero => (
+          <button key={mesero.id} type="button" className={`barra-waiter-chip ${selected === mesero.id ? 'is-active' : ''}`} onClick={() => onChange(mesero.id)}>
+            <span>{mesero.nombre}</span><b>{countFor(mesero.id)}</b>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // Personal predefinido por defecto para nuevos turnos
 const STAFF_DEFECTO = [
   { id:'def_barra', name:'Barra',     rol:'barra',     pay:'3%',   activo:true, temporal:true },
@@ -324,14 +349,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
           <div style={{...s.card,marginTop:'1rem'}}>
             <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>🧾 Comandas de esta noche</div>
             <div style={{fontSize:12,color:C.sub,marginBottom:12}}>Solo se muestran las comandas del turno correspondiente a la planilla {viewPlanilla.fecha}.</div>
-            <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:12}}>
-              <label htmlFor="planilla-mesero-filter-jefe" style={{color:C.sub,fontSize:12,fontWeight:600}}>Filtrar por mesero:</label>
-              <select id="planilla-mesero-filter-jefe" style={{...s.sel,minWidth:190,flex:'1 1 190px'}} value={viewMeseroFilter} onChange={event=>setViewMeseroFilter(event.target.value)}>
-                <option value="todos">Todos los meseros</option>
-                {viewMeseros.map(mesero=><option key={mesero.id} value={mesero.id}>{mesero.nombre}</option>)}
-              </select>
-              {viewMeseroFilter!=='todos'&&<button type="button" style={{...s.btn('ghost'),padding:'6px 10px'}} onClick={()=>setViewMeseroFilter('todos')}>Limpiar filtro</button>}
-            </div>
+            <ComandaMeseroFilter meseros={viewMeseros} comandas={viewComandas} selected={viewMeseroFilter} onChange={setViewMeseroFilter}/>
             {comandasLoading&&<div style={{color:C.sub,fontSize:12}}>Cargando comandas...</div>}
             {!comandasLoading&&!viewComandas.length&&<div style={{color:C.sub,fontSize:12}}>No hubo comandas registradas en este turno.</div>}
             {!comandasLoading&&viewComandas.length>0&&!viewComandasVisibles.length&&<div style={{color:C.sub,fontSize:12}}>No hay comandas de este mesero.</div>}
@@ -369,7 +387,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
               <div style={{display:'flex',gap:12,alignItems:'center'}}>
                 <span style={{color:C.green,fontWeight:600,fontSize:13}}>{COP(p.ventas)}</span>
                 <span style={{color:C.amber,fontWeight:700,fontSize:13}}>{COP(p.neto)}</span>
-                <button style={{...s.btn(),padding:'2px 10px',fontSize:11}} onClick={()=>setViewPlanilla(p)}>Ver</button>
+                <button className="planilla-view-button" onClick={()=>setViewPlanilla(p)}>🧾 Ver detalle</button>
                 <button style={{...s.btn(),padding:'2px 10px',fontSize:11}} onClick={()=>printPlanilla(p,negocio.name)}>🖨</button>
               </div>
             </div>
@@ -480,7 +498,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
                         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                           <span style={{fontWeight:600,fontSize:13}}>{p.fecha} <span style={{color:C.sub,fontWeight:400,fontSize:11}}>{p.apertura}–{p.cierre}</span></span>
                           <div style={{display:'flex',gap:5}}>
-                            <button style={{...s.btn(),padding:'2px 10px',fontSize:11}} onClick={()=>setViewPlanilla(p)}>Ver</button>
+                            <button className="planilla-view-button" onClick={()=>setViewPlanilla(p)}>🧾 Ver detalle</button>
                             <button style={{...s.btn(),padding:'2px 10px',fontSize:11}} onClick={()=>printPlanilla(p,negocio.name)}>🖨</button>
                           </div>
                         </div>
@@ -515,14 +533,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
             <div style={{marginTop:'1rem',paddingTop:'1rem',borderTop:`1px solid ${C.border}50`}}>
               <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>🧾 Comandas de esta noche</div>
               <div style={{fontSize:12,color:C.sub,marginBottom:12}}>Solo se muestran las comandas del turno correspondiente a la planilla {viewPlanilla.fecha}.</div>
-              <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:12}}>
-                <label htmlFor="planilla-mesero-filter-admin" style={{color:C.sub,fontSize:12,fontWeight:600}}>Filtrar por mesero:</label>
-                <select id="planilla-mesero-filter-admin" style={{...s.sel,minWidth:190,flex:'1 1 190px'}} value={viewMeseroFilter} onChange={event=>setViewMeseroFilter(event.target.value)}>
-                  <option value="todos">Todos los meseros</option>
-                  {viewMeseros.map(mesero=><option key={mesero.id} value={mesero.id}>{mesero.nombre}</option>)}
-                </select>
-                {viewMeseroFilter!=='todos'&&<button type="button" style={{...s.btn('ghost'),padding:'6px 10px'}} onClick={()=>setViewMeseroFilter('todos')}>Limpiar filtro</button>}
-              </div>
+              <ComandaMeseroFilter meseros={viewMeseros} comandas={viewComandas} selected={viewMeseroFilter} onChange={setViewMeseroFilter}/>
               {comandasLoading&&<div style={{color:C.sub,fontSize:12}}>Cargando comandas...</div>}
               {!comandasLoading&&!viewComandas.length&&<div style={{color:C.sub,fontSize:12}}>No hubo comandas registradas en este turno.</div>}
               {!comandasLoading&&viewComandas.length>0&&!viewComandasVisibles.length&&<div style={{color:C.sub,fontSize:12}}>No hay comandas de este mesero.</div>}
@@ -604,7 +615,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
             📥 <strong style={{color:C.green}}>Entradas</strong> = mercancía que llegó este turno. &nbsp;
             📦 <strong style={{color:C.green}}>Existencias</strong> = conteo físico al cierre del turno. &nbsp;
             📤 <strong style={{color:C.amber}}>Salidas</strong> = calculadas automáticamente (Inicio + Entradas − Existencias). &nbsp;
-            🎁 <strong style={{color:C.purple}}>Cortesías</strong> automáticas por categoría.
+            🎁 <strong style={{color:C.purple}}>Cortesías</strong> se registran manualmente en el conteo de cierre.
           </div>
           {(()=>{
             const negatives=negocio.productos.filter(p=>{const m=movs[p.id]||{};if(m.existencias!==undefined)return m.existencias<0;return p.stock+(m.entradas||0)-(m.salidas||0)-(m.cortesia||0)<0;});
@@ -616,14 +627,13 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
           })()}
           <div style={{overflowX:'auto',overflowY:'auto',maxHeight:'calc(100vh - 290px)'}}>
             <table style={{width:'100%',borderCollapse:'collapse',minWidth:720}}>
-              <thead><tr>{['Producto','Cat.','Auto','Inicio','📥 Entradas','📦 Existencias','📤 Salidas','🎁 Cortesía','Final','Venta'].map(h=><th key={h} style={{...s.th,position:'sticky',top:0,zIndex:2,background:'#1a1a2e'}}>{h}</th>)}</tr></thead>
+              <thead><tr>{['Producto','Cat.','Inicio','📥 Entradas','📦 Existencias','📤 Salidas','🎁 Cortesía','Final','Venta'].map(h=><th key={h} style={{...s.th,position:'sticky',top:0,zIndex:2,background:'#1a1a2e'}}>{h}</th>)}</tr></thead>
               <tbody>{negocio.productos.map((p,i)=>{
                 const m=movs[p.id]||{};const e=m.entradas||0;const sa=m.salidas||0;const co=m.cortesia||0;const final=m.existencias!==undefined?m.existencias:p.stock+e-sa-co;
                 return(
                   <tr key={p.id} style={{background:final<0?C.red+'10':i%2===0?C.rowA:C.rowB}}>
                     <td style={{...s.td(i),fontWeight:500,fontSize:11}}>{p.name}</td>
                     <td style={s.td(i)}><Badge color={CAT_COLORS[p.cat]||C.muted} small>{p.cat}</Badge></td>
-                    <td style={s.td(i)}>{p.courtesy?<Badge color={C.purple} small>→{p.courtesy}</Badge>:<span style={{color:C.muted}}>—</span>}</td>
                     <td style={{...s.td(i),fontWeight:700,color:C.sub}}>{p.stock}</td>
                     <td style={s.td(i)}>
                       <input type="number" min="0" style={{...s.inp,width:56,padding:'3px 5px',textAlign:'center',border:`1px solid ${e>0?C.green:C.border}`,color:e>0?C.green:C.text,fontWeight:e>0?700:400,background:e>0?C.green+'12':C.surface}}
@@ -645,42 +655,12 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
                             const ent=prevM.entradas||0;
                             const newSalidas=val!==undefined?Math.max(0,p.stock+ent-val):0;
                             const updated={...prev,[p.id]:{...prevM,existencias:val,salidas:newSalidas}};
-                            if(p.courtesy&&val!==undefined){
-                              const ck=p.courtesy.toLowerCase();
-                              // Búsqueda en dos pasos: primero preferencia específica (coca),
-                              // luego fallback. Evita que "Soda" sea deducida antes que "Coca-Cola".
-                              const cpFind=(test)=>negocio.productos.find(x=>{if(x.id===p.id)return false;const n=x.name.toLowerCase();return test(n,ck);});
-                              const cp=
-                                cpFind((n,ck)=>{
-                                  if(ck==='agua')return n.includes('agua')&&!n.includes('gator')&&!n.includes('ardiente')&&!n.includes('iero');
-                                  if(ck==='gatorade')return n.includes('gatorade')||n.includes('gator');
-                                  if(ck==='gaseosa')return n.includes('coca'); // primera preferencia: coca-cola
-                                  return false;
-                                })||
-                                cpFind((n,ck)=>{
-                                  if(ck==='gaseosa')return n.includes('gaseosa')||n.includes('soda'); // fallback
-                                  return false;
-                                });
-                              if(cp){
-                                // Sumar salidas de TODOS los productos que comparten la misma cortesía
-                                const totalCortesia=negocio.productos
-                                  .filter(x=>x.courtesy?.toLowerCase()===ck)
-                                  .reduce((sum,x)=>sum+(updated[x.id]?.salidas||0),0);
-                                const cpM=prev[cp.id]||{};
-                                updated[cp.id]={...cpM,cortesia:totalCortesia};
-                                if(cpM.existencias!==undefined){
-                                  // salidas = total físico que salió (stock + entradas - existencias)
-                                  // La cortesía es una partida DENTRO de esas salidas, no se resta de nuevo
-                                  updated[cp.id]={...updated[cp.id],salidas:Math.max(0,cp.stock+(cpM.entradas||0)-cpM.existencias)};
-                                }
-                              }
-                            }
                             return updated;
                           });
                         }}/>
                     </td>
                     <td style={s.td(i)}>
-                      <span style={{fontSize:13,fontWeight:sa>0?700:400,color:sa>0?(p.courtesy?C.purple:C.amber):C.sub,display:'block',textAlign:'center'}}>{sa>0?sa:'—'}</span>
+                      <span style={{fontSize:13,fontWeight:sa>0?700:400,color:sa>0?C.amber:C.sub,display:'block',textAlign:'center'}}>{sa>0?sa:'—'}</span>
                     </td>
                     <td style={s.td(i)}>
                       <input type="number" min="0" style={{...s.inp,width:56,padding:'3px 5px',textAlign:'center',color:co>0?C.purple:C.text,fontWeight:co>0?700:400,border:`1px solid ${co>0?C.purple:C.border}`}}
@@ -716,7 +696,6 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
             </table>
           </div>
           {(()=>{const entradas=negocio.productos.filter(p=>(movs[p.id]?.entradas||0)>0);if(!entradas.length)return null;return<div style={{marginTop:8,padding:'8px 12px',background:C.green+'15',border:`1px solid ${C.green}30`,borderRadius:8,fontSize:12}}><strong style={{color:C.green}}>📥 Entradas registradas (sumarán al inventario al cerrar):</strong>{entradas.map((p,i)=><span key={i} style={{marginLeft:8,color:C.text2}}>+{movs[p.id].entradas} {p.name.split(' ').slice(0,2).join(' ')}</span>)}</div>;})()}
-          {(()=>{const sum=negocio.productos.filter(p=>p.courtesy&&(movs[p.id]?.salidas||0)>0);if(!sum.length)return null;return<div style={{marginTop:6,padding:'8px 12px',background:C.purple+'15',border:`1px solid ${C.purple}30`,borderRadius:8,fontSize:12}}><strong style={{color:C.purple}}>🎁 Cortesías automáticas:</strong>{sum.map((p,i)=><span key={i} style={{marginLeft:8,color:C.text2}}>{movs[p.id].salidas}×{p.name.split(' ').slice(0,2).join(' ')}→{movs[p.id].salidas} {p.courtesy}</span>)}</div>;})()}
         </div>
       )}
 

@@ -28,6 +28,20 @@ CREATE TABLE IF NOT EXISTS productos (
   min INTEGER DEFAULT 0, courtesy TEXT, sort_order INTEGER DEFAULT 0,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS promociones (
+  id TEXT PRIMARY KEY,
+  negocio_id TEXT NOT NULL,
+  nombre TEXT NOT NULL,
+  tipo TEXT NOT NULL,
+  producto_principal_id TEXT NOT NULL,
+  producto_cortesia_id TEXT,
+  productos_combo TEXT DEFAULT '[]',
+  precio_promocional INTEGER,
+  cantidad_compra INTEGER NOT NULL DEFAULT 2,
+  cantidad_cortesia INTEGER NOT NULL DEFAULT 1,
+  activo INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS planillas (
   id TEXT PRIMARY KEY, negocio_id TEXT NOT NULL, fecha TEXT NOT NULL,
   apertura TEXT, cierre TEXT, base_caja INTEGER DEFAULT 0, ventas INTEGER DEFAULT 0,
@@ -122,6 +136,14 @@ if (!userColumns.includes('password_hash_local')) {
   db.exec('ALTER TABLE usuarios ADD COLUMN password_hash_local TEXT');
 }
 
+const promotionColumns = db.prepare('PRAGMA table_info(promociones)').all().map(column => column.name);
+if (!promotionColumns.includes('productos_combo')) {
+  db.exec("ALTER TABLE promociones ADD COLUMN productos_combo TEXT DEFAULT '[]'");
+}
+if (!promotionColumns.includes('precio_promocional')) {
+  db.exec('ALTER TABLE promociones ADD COLUMN precio_promocional INTEGER');
+}
+
 const comandaColumns = db.prepare('PRAGMA table_info(comandas)').all().map(column => column.name);
 if (!comandaColumns.includes('consecutivo')) {
   db.exec('ALTER TABLE comandas ADD COLUMN consecutivo INTEGER');
@@ -148,7 +170,7 @@ function encode(row) {
   return Object.fromEntries(Object.entries(row).map(([key, value]) => {
     if (typeof value !== 'string') return [key, value];
     if (['checklist', 'personal_detalle', 'banco_detalle', 'movimientos', 'gastos_detalle',
-      'inventario_apertura', 'inventario_cierre', 'meseros_ids', 'turnos_incluidos', 'negocios'].includes(key)) {
+      'inventario_apertura', 'inventario_cierre', 'meseros_ids', 'turnos_incluidos', 'negocios', 'productos_combo'].includes(key)) {
       try { return [key, JSON.parse(value)]; } catch { return [key, value]; }
     }
     return [key, value];
@@ -159,7 +181,7 @@ function decode(data) {
   return Object.fromEntries(Object.entries(data).map(([key, value]) => {
     if (typeof value === 'boolean') return [key, value ? 1 : 0];
     if (value && typeof value === 'object' && ['checklist', 'personal_detalle', 'banco_detalle', 'movimientos',
-      'gastos_detalle', 'inventario_apertura', 'inventario_cierre', 'meseros_ids', 'turnos_incluidos', 'negocios'].includes(key)) {
+      'gastos_detalle', 'inventario_apertura', 'inventario_cierre', 'meseros_ids', 'turnos_incluidos', 'negocios', 'productos_combo'].includes(key)) {
       return [key, JSON.stringify(value)];
     }
     return [key, value];

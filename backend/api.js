@@ -3,7 +3,7 @@ const { db, encode, decode } = require('./db');
 
 const router = express.Router();
 const allowedTables = new Set([
-  'negocios', 'usuarios', 'staff', 'productos', 'planillas', 'transferencias', 'gastos', 'gastos_fijos', 'cxc', 'turnos',
+  'negocios', 'usuarios', 'staff', 'productos', 'promociones', 'planillas', 'transferencias', 'gastos', 'gastos_fijos', 'cxc', 'turnos',
   'comandas', 'comanda_items', 'pagos', 'movimientos_inventario', 'gastos_turno',
   'descorches', 'novedades', 'gastos_semanales', 'cierres_semanales',
 ]);
