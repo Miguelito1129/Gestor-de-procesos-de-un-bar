@@ -43,7 +43,8 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [promociones, setPromociones] = useState([]);
-
+  const [expandedId, setExpandedId] = useState(null);
+  const [itemDetails, setItemDetails] = useState({});
   useEffect(() => {
     let active = true;
     localFetch("promociones", `negocio_id=eq.${negocio.id}&activo=eq.true&select=*`).then(rows => {
@@ -534,6 +535,29 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
     }
 
     setBusy(false);
+  };
+
+  const toggleDetails = async comanda => {
+    if (expandedId === comanda.id) {
+      setExpandedId(null);
+      return;
+    }
+    if (!itemDetails[comanda.id]) {
+      const rows = await localFetch("comanda_items", `comanda_id=eq.${comanda.id}&select=*`);
+      if (!rows) {
+        setMessage("No fue posible cargar los productos de la comanda.");
+        return;
+      }
+      const names = new Map(productos.map(product => [product.id, product.name]));
+      setItemDetails(current => ({
+        ...current,
+        [comanda.id]: rows.map(row => ({
+          ...row,
+          nombre: names.get(row.producto_id) || "Producto no disponible",
+        })),
+      }));
+    }
+    setExpandedId(comanda.id);
   };
 
   const confirmPayment = async (comanda, paid, method = paymentMethods[comanda.id] || "efectivo") => {
@@ -1095,31 +1119,26 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                         "1px solid rgba(255,255,255,.06)",
                     }}
                   >
-                    <div
-                      style={{
-                        minWidth: 0,
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontWeight: 700,
-                          fontSize: 13,
-                        }}
-                      >
-                        {item.nombre}
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ fontWeight: 700, fontSize: 13 }}>{item.nombre}</span>
+                        {(() => {
+                          const productStock = Number(productos.find(p => p.id === item.producto_id)?.stock || 0);
+                          const available = productStock >= item.cantidad;
+                          return (
+                            <span style={{ 
+                              display: "inline-flex", alignItems: "center", gap: 4, 
+                              background: available ? "rgba(52, 211, 153, 0.15)" : "rgba(248, 113, 113, 0.15)", 
+                              padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700,
+                              color: available ? C.green : C.red
+                            }}>
+                              Pide {item.cantidad} <span style={{ color: C.sub, opacity: 0.7, fontWeight: 400 }}>/</span> Stock {productStock}
+                            </span>
+                          );
+                        })()}
                       </div>
-
-                      <div
-                        style={{
-                          color: C.sub,
-                          fontSize: 10,
-                          marginTop: 2,
-                        }}
-                      >
-                        {COP(
-                          item.precio_unitario
-                        )}{" "}
-                        c/u
+                      <div style={{ color: C.sub, fontSize: 10, marginTop: 4 }}>
+                        {COP(item.precio_unitario)} c/u
                       </div>
                     </div>
 
@@ -1542,6 +1561,41 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                     {COP(comanda.total)}
                   </strong>
                 </div>
+
+                {/* VER PRODUCTOS */}
+                <div style={{ marginTop: 10 }}>
+                  <button style={{ ...s.btn("ghost"), width: "100%", padding: "6px 10px", fontSize: 12 }} type="button" disabled={busy} onClick={() => toggleDetails(comanda)}>
+                    {expandedId === comanda.id ? "Ocultar productos" : "Ver productos"}
+                  </button>
+                </div>
+
+                {expandedId === comanda.id && (
+                  <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, background: C.surface, border: `1px solid ${C.border}` }}>
+                    <div style={{ color: C.sub, fontSize: 11, marginBottom: 6 }}>Comparación de pedido vs inventario</div>
+                    {(itemDetails[comanda.id] || []).map(item => {
+                      const productStock = Number(productos.find(p => p.id === item.producto_id)?.stock || 0);
+                      const available = productStock >= item.cantidad;
+                      return (
+                        <div key={item.id} style={{ padding: "8px 0", borderBottom: `1px solid ${C.border}50`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                              <span style={{ fontWeight: 600, fontSize: 12 }}>{item.nombre}</span>
+                              <span style={{ 
+                                display: "inline-flex", alignItems: "center", gap: 4, 
+                                background: available ? "rgba(52, 211, 153, 0.15)" : "rgba(248, 113, 113, 0.15)", 
+                                padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700,
+                                color: available ? C.green : C.red
+                              }}>
+                                Pide {item.cantidad} <span style={{ color: C.sub, opacity: 0.7, fontWeight: 400 }}>/</span> Stock {productStock}
+                              </span>
+                            </div>
+                          </div>
+                          <strong style={{ color: C.green, fontSize: 12, flexShrink: 0 }}>{COP(Number(item.cantidad) * Number(item.precio_unitario))}</strong>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
 
                 {/* ACCIONES */}
                 {isPending && (

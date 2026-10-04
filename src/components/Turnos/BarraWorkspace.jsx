@@ -253,12 +253,24 @@ export default function BarraWorkspace({ negocio, userName }) {
               <div style={{ flexBasis: "100%", marginTop: 8, padding: "8px 10px", borderRadius: 8, background: C.surface, border: `1px solid ${C.border}` }}>
                 <div style={{ color: C.sub, fontSize: 11, marginBottom: 6 }}>Comparación contra el inventario actual</div>
                 {stockCheck.map(item => (
-                  <div key={item.id} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto auto", alignItems: "center", gap: 8, fontSize: 12, padding: "5px 0", borderBottom: `1px solid ${C.border}50` }}>
-                    <span>{item.nombre}</span>
-                    <span style={{ color: item.available ? C.green : C.red, whiteSpace: "nowrap" }}>
-                      Pide {item.requested} · Stock {item.stock}
-                    </span>
-                    <strong style={{ color: C.green }}>{COP(item.requested * Number(item.precio_unitario))}</strong>
+                  <div key={item.id} style={{ padding: "8px 0", borderBottom: `1px solid ${C.border}50`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ fontWeight: 600, fontSize: 13 }}>{item.nombre}</span>
+                        <span style={{ 
+                          display: "inline-flex", alignItems: "center", gap: 4, 
+                          background: item.available ? "rgba(52, 211, 153, 0.15)" : "rgba(248, 113, 113, 0.15)", 
+                          padding: "2px 6px", borderRadius: 4, fontSize: 11, fontWeight: 700,
+                          color: item.available ? C.green : C.red
+                        }}>
+                          Pide {item.requested} <span style={{ color: C.sub, opacity: 0.7, fontWeight: 400 }}>/</span> Stock {item.stock}
+                        </span>
+                      </div>
+                      <div style={{ color: C.sub, fontSize: 11, marginTop: 4 }}>
+                        {COP(item.precio_unitario)} c/u
+                      </div>
+                    </div>
+                    <strong style={{ color: C.green, fontSize: 13, flexShrink: 0 }}>{COP(item.requested * Number(item.precio_unitario))}</strong>
                   </div>
                 ))}
                 {hasInsufficientStock && <div style={{ color: C.red, fontSize: 11, marginTop: 7 }}>No se puede autorizar hasta registrar entrada o ajustar el pedido.</div>}
