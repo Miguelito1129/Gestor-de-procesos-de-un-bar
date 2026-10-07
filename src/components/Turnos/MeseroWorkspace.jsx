@@ -4,9 +4,12 @@ import {
   localDelete,
   localFetch,
   localInsert,
+  localPrintInvoice,
+  localPrintOrder,
   localUpdate,
 } from "../../lib/localApi.js";
 import { uid } from "../../utils/helpers.js";
+import { formatLocalTime } from "../../utils/dateTime.js";
 import { Badge, Metric, SectionTitle } from "../common/index.jsx";
 import { useTurnoData } from "../../hooks/useTurnoData.js";
 
@@ -19,21 +22,30 @@ const STATUS_LABEL = {
 
 const STATUS_COLOR = {
   enviada: C.amber,
+  entregada_falta_pago: C.amber,
   pagada: C.green,
   cancelada: C.red,
 };
-
-const formatTime = value =>
-  value
-    ? new Date(value).toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-      })
-    : "";
+const ORDER_STATUS_GROUPS = [
+  { id: "enviada", title: "En espera de Barra" },
+  { id: "entregada_falta_pago", title: "Confirmar pago" },
+  { id: "pagada", title: "Pagados" },
+  { id: "cancelada", title: "Cancelados" },
+  { id: "otros", title: "Otros estados" },
+];
+const promotionTypesOf = value => {
+  if (Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(value || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
 
 export default function MeseroWorkspace({ negocio, userName, userId }) {
   const { turno, comandas, setComandas, productos } =
-    useTurnoData(negocio.id, userId);
+    useTurnoData(negocio.id, userId, true, true);
 
   const [productSearch, setProductSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Todos");
@@ -42,9 +54,12 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
   const [paymentMethods, setPaymentMethods] = useState({});
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [printingId, setPrintingId] = useState(null);
+  const [printMessages, setPrintMessages] = useState({});
   const [promociones, setPromociones] = useState([]);
   const [expandedId, setExpandedId] = useState(null);
   const [itemDetails, setItemDetails] = useState({});
+  const [activeOrderStatus, setActiveOrderStatus] = useState("entregada_falta_pago");
   useEffect(() => {
     let active = true;
     localFetch("promociones", `negocio_id=eq.${negocio.id}&activo=eq.true&select=*`).then(rows => {
@@ -103,13 +118,20 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
   );
 
   const ventasTotal = comandas.reduce(
-    (sum, comanda) => sum + Number(comanda.total || 0),
+    (sum, comanda) =>
+      sum + (comanda.estado === "cancelada" ? 0 : Number(comanda.total || 0)),
     0
   );
 
   const pendingOrders = comandas.filter(
     comanda => comanda.estado === "enviada"
   ).length;
+  const ordersForStatus = statusId => comandas.filter(comanda =>
+    statusId === "otros"
+      ? !ORDER_STATUS_GROUPS.some(group => group.id !== "otros" && group.id === comanda.estado)
+      : comanda.estado === statusId
+  );
+  const visibleOrders = ordersForStatus(activeOrderStatus);
 
   const availableProducts = visibleProducts.filter(
     product => Number(product.stock || 0) > 0
@@ -117,6 +139,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
 
   const addItem = product => {
     if (Number(product.stock || 0) < 1 || busy) return;
+    const promotion = getPromotion(product.id);
 
     setItems(current => {
       const existing = current.find(
@@ -135,6 +158,10 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
             ? {
                 ...item,
                 cantidad: item.cantidad + 1,
+                promocionesAplicadas: [...new Set([
+                  ...promotionTypesOf(item.promocionesAplicadas),
+                  ...(promotion ? [promotion.tipo] : []),
+                ])],
               }
             : item
         );
@@ -147,6 +174,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
           nombre: product.name,
           cantidad: 1,
           precio_unitario: Number(product.price || 0),
+          promocionesAplicadas: promotion ? [promotion.tipo] : [],
         },
       ];
     });
@@ -204,12 +232,21 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
       const next = current.map(item => ({ ...item }));
       components.forEach((component, index) => {
         const product = productos.find(item => item.id === component.producto_id);
+        const componentPromotionType = component.cortesia
+          ? "cortesia"
+          : promotion.tipo === "cortesia"
+            ? "producto_mas_cortesia"
+            : promotion.tipo;
         const existing = next.find(item => item.producto_id === component.producto_id);
         if (existing) {
           existing.cantidad += Number(component.cantidad || 0);
+          existing.promocionesAplicadas = [...new Set([
+            ...promotionTypesOf(existing.promocionesAplicadas),
+            componentPromotionType,
+          ])];
           if (index === 0) existing.comboDiscount = Number(existing.comboDiscount || 0) + discount;
           if (component.cortesia) existing.comboDiscount = Number(existing.comboDiscount || 0) + Number(component.cantidad || 0) * Number(product.price || 0);
-        } else next.push({ producto_id: product.id, nombre: product.name, cantidad: Number(component.cantidad || 0), precio_unitario: Number(product.price || 0), comboDiscount: index === 0 ? discount : component.cortesia ? Number(component.cantidad || 0) * Number(product.price || 0) : 0 });
+        } else next.push({ producto_id: product.id, nombre: product.name, cantidad: Number(component.cantidad || 0), precio_unitario: Number(product.price || 0), comboDiscount: index === 0 ? discount : component.cortesia ? Number(component.cantidad || 0) * Number(product.price || 0) : 0, promocionesAplicadas: [componentPromotionType] });
       });
       return next;
     });
@@ -265,6 +302,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
           precio_unitario: Number(
             item.precio_unitario || 0
           ),
+          promocionesAplicadas: promotionTypesOf(item.promociones_aplicadas),
         }))
         .filter(item => item.cantidad > 0)
     );
@@ -314,6 +352,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
         cantidad: item.cantidad,
         precio_unitario: item.precio_unitario,
         descuento: itemDiscount(item),
+        promociones_aplicadas: promotionTypesOf(item.promocionesAplicadas),
       };
 
       const ok = item.id
@@ -329,12 +368,23 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
             cantidad: item.cantidad,
             precio_unitario: item.precio_unitario,
             descuento: itemDiscount(item),
+            promociones_aplicadas: promotionTypesOf(item.promocionesAplicadas),
           });
 
       if (!ok) return false;
     }
 
     return true;
+  };
+
+  const printOrderForBar = async comandaId => {
+    try {
+      const result = await localPrintOrder(comandaId, userId);
+      return result?.message || "Pedido enviado a imprimir en Printer001.";
+    } catch (error) {
+      console.error("El pedido se guardó, pero no se pudo imprimir para barra:", error);
+      return `No se pudo imprimir en Printer001: ${error.message || "revisa la conexión Bluetooth."}`;
+    }
   };
 
   const submit = async () => {
@@ -359,61 +409,48 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
     setMessage("");
 
     if (editingId) {
-      const updated = await localUpdate(
+      const detailsUpdated = await saveItems(editingId);
+      const updatedAt = new Date().toISOString();
+      const updated = detailsUpdated && await localUpdate(
         "comandas",
         { id: editingId },
         {
           subtotal: cartTotal,
           total: cartTotal,
+          actualizada_en: updatedAt,
         }
       );
 
-      const detailsUpdated =
-        updated && (await saveItems(editingId));
-
-      if (!updated || !detailsUpdated) {
+      if (!detailsUpdated || !updated) {
         setMessage(
           "No fue posible guardar todos los cambios de la comanda."
         );
       } else {
+        const editedComandaId = editingId;
         setComandas(current =>
           current.map(row =>
-            row.id === editingId
+            row.id === editedComandaId
               ? {
                   ...row,
                   subtotal: cartTotal,
                   total: cartTotal,
+                  actualizada_en: updatedAt,
                 }
               : row
           )
         );
 
         clearComposer();
-        setMessage(
-          "✓ Comanda modificada y enviada nuevamente a barra."
-        );
+        const printMessage = await printOrderForBar(editedComandaId);
+        setMessage(`✓ Comanda modificada y enviada nuevamente a barra. ${printMessage}`);
       }
 
       setBusy(false);
       return;
     }
 
-    const staff = await localFetch(
-      "staff",
-      `negocio_id=eq.${negocio.id}&rol=eq.mesero&select=id,name&order=name.asc&limit=20`
-    );
-
-    const assigned = (staff || []).find(person => person.id === userId)
-      || (staff || []).find(
-        person =>
-          person.name.toLowerCase() ===
-          (userName || "").toLowerCase()
-      ) || staff?.[0];
-
-    if (!assigned) {
-      setMessage(
-        "No hay un mesero configurado para este negocio."
-      );
+    if (!userId) {
+      setMessage("No se pudo identificar la cuenta del mesero. Cierra sesión e ingresa nuevamente.");
       setBusy(false);
       return;
     }
@@ -432,8 +469,8 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
       id: comandaId,
       turno_id: turno.id,
       mesa: "",
-      mesero_id: assigned.id,
-      mesero_nombre: assigned.name,
+      mesero_id: userId,
+      mesero_nombre: userName,
       consecutivo,
       estado: "enviada",
       subtotal: cartTotal,
@@ -464,8 +501,8 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
           id: comandaId,
           turno_id: turno.id,
           mesa: "",
-          mesero_id: assigned.id,
-          mesero_nombre: assigned.name,
+          mesero_id: userId,
+          mesero_nombre: userName,
           consecutivo,
           estado: "enviada",
           total: cartTotal,
@@ -476,9 +513,8 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
 
       clearComposer();
 
-      setMessage(
-        "✓ Pedido enviado a barra correctamente."
-      );
+      const printMessage = await printOrderForBar(comandaId);
+      setMessage(`✓ Pedido enviado a barra correctamente. ${printMessage}`);
     }
 
     setBusy(false);
@@ -507,7 +543,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
       { id: comanda.id },
       {
         estado: "cancelada",
-        confirmado_en: new Date().toISOString(),
+        actualizada_en: new Date().toISOString(),
       }
     );
 
@@ -597,6 +633,58 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
     setBusy(false);
   };
 
+  const printInvoice = async comanda => {
+    if (comanda.estado !== "pagada" || printingId || !userId) return;
+    setPrintingId(comanda.id);
+    setPrintMessages(current => ({ ...current, [comanda.id]: null }));
+    try {
+      const result = await localPrintInvoice(comanda.id, userId);
+      setPrintMessages(current => ({
+        ...current,
+        [comanda.id]: { success: true, text: result?.message || "Comprobante enviado a Printer001." },
+      }));
+    } catch (error) {
+      console.error("No fue posible imprimir la factura de la comanda:", error);
+      setPrintMessages(current => ({
+        ...current,
+        [comanda.id]: { success: false, text: error.message || "No fue posible imprimir el comprobante." },
+      }));
+    } finally {
+      setPrintingId(null);
+    }
+  };
+
+  const turnoWaiters = Array.isArray(turno?.meseros_ids) ? turno.meseros_ids : [];
+  const authorizedForTurn = turnoWaiters.some(id => String(id) === String(userId));
+  if (!turno) {
+    return (
+      <div style={{ maxWidth: 720, margin: "0 auto", padding: "24px 12px" }}>
+        <SectionTitle>🧾 Mi turno — {negocio.name}</SectionTitle>
+        <div style={{ ...s.card, textAlign: "center" }}>
+          <div style={{ fontSize: 28, marginBottom: 8 }}>⏱</div>
+          <strong>No hay una planilla abierta</strong>
+          <p style={{ color: C.sub, fontSize: 13, lineHeight: 1.5 }}>
+            Podrás acceder a pedidos cuando el gerente abra el turno y autorice tu cuenta.
+          </p>
+        </div>
+      </div>
+    );
+  }
+  if (turno && !authorizedForTurn) {
+    return (
+      <div style={{ maxWidth: 720, margin: "0 auto", padding: "24px 12px" }}>
+        <SectionTitle>🧾 Mi turno — {negocio.name}</SectionTitle>
+        <div style={{ ...s.card, borderColor: `${C.red}50`, textAlign: "center" }}>
+          <div style={{ fontSize: 28, marginBottom: 8 }}>🔒</div>
+          <strong style={{ color: C.red }}>No estás autorizado para este turno</strong>
+          <p style={{ color: C.sub, fontSize: 13, lineHeight: 1.5 }}>
+            El gerente debe incluir tu cuenta en la lista de meseros autorizados al abrir la planilla.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       style={{
@@ -621,6 +709,9 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
         Revisa el carrito y envíalo a barra cuando esté
         listo.
       </p>
+      <div style={{ color: C.amber, fontSize: 12, fontWeight: 700, marginTop: -8, marginBottom: 16 }}>
+        Cuenta activa: {userName}
+      </div>
 
       {/* RESUMEN DEL TURNO */}
       <div
@@ -667,13 +758,37 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
 
       {promociones.length > 0 && (
         <div className="waiter-promotions">
-          <div className="waiter-promotions__title">🏷️ Promociones activas</div>
+          <div className="waiter-promotions__header">
+            <div>
+              <span className="waiter-promotions__eyebrow">OFERTAS DISPONIBLES</span>
+              <div className="waiter-promotions__title">Promociones para este pedido</div>
+              <p>Agrega una oferta y se aplicará automáticamente al carrito.</p>
+            </div>
+            <span className="waiter-promotions__count">{promociones.length} activas</span>
+          </div>
           <div className="waiter-promotions__list">
             {promociones.map(promotion => {
               const main = productos.find(product => product.id === promotion.producto_principal_id)?.name || "Producto";
               const combo = promotion.tipo === "combo" ? promotionItems(promotion).map(item => `${item.cantidad}× ${productos.find(product => product.id === item.producto_id)?.name || "Producto"}`).join(" + ") : "";
               const text = promotion.tipo === "2x1" ? `${main}: lleva ${promotion.cantidad_compra || 2}, paga 1` : promotion.tipo === "precio_especial" ? `${main}: ${COP(promotion.precio_promocional)}` : promotion.tipo === "combo" ? `${combo} · ${COP(promotion.precio_promocional)}` : `${main} + cortesía`;
-              return <div key={promotion.id} className="waiter-promotion"><strong>{promotion.tipo === "combo" ? "🍻 Combo" : promotion.tipo === "cortesia" ? "🎁 Cortesía" : promotion.tipo === "2x1" ? "2×1" : "Precio especial"}</strong><span>{promotion.nombre} · {text}</span><button type="button" disabled={busy} onClick={() => addPromotion(promotion)}>Agregar</button></div>;
+              const type = promotion.tipo === "combo" ? "combo" : promotion.tipo === "cortesia" ? "courtesy" : promotion.tipo === "2x1" ? "two-for-one" : "special-price";
+              const label = promotion.tipo === "combo" ? "Combo" : promotion.tipo === "cortesia" ? "Producto + cortesía" : promotion.tipo === "2x1" ? "2 × 1" : "Precio especial";
+              const icon = promotion.tipo === "combo" ? "🍸" : promotion.tipo === "cortesia" ? "🎁" : promotion.tipo === "2x1" ? "✦" : "◈";
+              return (
+                <article key={promotion.id} className={`waiter-promotion waiter-promotion--${type}`}>
+                  <div className="waiter-promotion__top">
+                    <span className="waiter-promotion__icon" aria-hidden="true">{icon}</span>
+                    <span className="waiter-promotion__type">{label}</span>
+                  </div>
+                  <div className="waiter-promotion__content">
+                    <strong>{promotion.nombre}</strong>
+                    <span>{text}</span>
+                  </div>
+                  <button type="button" disabled={busy} onClick={() => addPromotion(promotion)}>
+                    <span aria-hidden="true">＋</span> Agregar al pedido
+                  </button>
+                </article>
+              );
             })}
           </div>
         </div>
@@ -768,34 +883,11 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
         </div>
 
         <div style={{ padding: 16 }}>
-          {/* BUSCADOR */}
-          <div
-            style={{
-              position: "relative",
-              marginBottom: 12,
-            }}
-          >
-            <span
-              style={{
-                position: "absolute",
-                left: 12,
-                top: "50%",
-                transform: "translateY(-50%)",
-                fontSize: 17,
-                pointerEvents: "none",
-              }}
-            >
-              🔎
-            </span>
-
+          <div className="waiter-catalogue-search">
+            <span aria-hidden="true">⌕</span>
             <input
-              style={{
-                ...s.inp,
-                width: "100%",
-                paddingLeft: 40,
-                fontSize: 15,
-              }}
               placeholder="Buscar producto..."
+              aria-label="Buscar producto"
               value={productSearch}
               onChange={event =>
                 setProductSearch(
@@ -804,51 +896,39 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
               }
               disabled={busy}
             />
+            {productSearch && (
+              <button
+                type="button"
+                aria-label="Limpiar búsqueda"
+                onClick={() => setProductSearch("")}
+                disabled={busy}
+              >
+                ×
+              </button>
+            )}
           </div>
 
-          {/* CATEGORÍAS */}
-          <div
-            style={{
-              display: "flex",
-              gap: 7,
-              overflowX: "auto",
-              paddingBottom: 8,
-              marginBottom: 12,
-              scrollbarWidth: "thin",
-            }}
-          >
+          <div className="waiter-category-list" role="group" aria-label="Filtrar productos por categoría">
             {categories.map(category => {
               const active =
                 selectedCategory === category;
+              const categoryCount = category === "Todos"
+                ? productos.length
+                : productos.filter(product => product.cat === category).length;
 
               return (
                 <button
                   key={category}
                   type="button"
+                  className={`waiter-category${active ? " is-active" : ""}`}
                   onClick={() =>
                     setSelectedCategory(category)
                   }
                   disabled={busy}
-                  style={{
-                    flex: "0 0 auto",
-                    border: active
-                      ? `1px solid ${C.green}`
-                      : `1px solid rgba(255,255,255,.10)`,
-                    background: active
-                      ? "rgba(0,210,100,.14)"
-                      : "rgba(255,255,255,.035)",
-                    color: active
-                      ? C.green
-                      : C.sub,
-                    borderRadius: 999,
-                    padding: "8px 13px",
-                    fontSize: 12,
-                    fontWeight: active ? 800 : 600,
-                    cursor: "pointer",
-                    whiteSpace: "nowrap",
-                  }}
+                  aria-pressed={active}
                 >
                   {category}
+                  <span>{categoryCount}</span>
                 </button>
               );
             })}
@@ -857,8 +937,8 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
           {/* PRODUCTOS */}
           <div className="waiter-catalogue-summary">
             <div>
-              <strong>Inventario disponible</strong>
-              <span>{availableProducts} de {visibleProducts.length} productos para pedir</span>
+              <strong>Productos para tu comanda</strong>
+              <span>{availableProducts} disponibles de {visibleProducts.length} productos</span>
             </div>
             <div className="waiter-catalogue-legend">
               <span><i className="is-available" />Disponible</span>
@@ -866,15 +946,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
               <span><i className="is-empty" />Agotado</span>
             </div>
           </div>
-          <div
-            className="waiter-product-grid"
-            style={{
-              display: "grid",
-              gridTemplateColumns:
-                "repeat(auto-fill,minmax(145px,1fr))",
-              gap: 10,
-            }}
-          >
+          <div className="waiter-product-grid">
             {visibleProducts.map(product => {
               const selected = items.find(
                 item =>
@@ -896,113 +968,41 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                   disabled={
                     outOfStock || busy
                   }
+                  aria-pressed={Boolean(selected)}
+                  className={`waiter-product-card${selected ? " is-selected" : ""}${outOfStock ? " is-out" : ""}`}
                   onClick={() =>
                     addItem(product)
                   }
-                  style={{
-                    position: "relative",
-                    textAlign: "left",
-                    minHeight: 130,
-                    borderRadius: 13,
-                    padding: 13,
-                    border: selected
-                      ? `2px solid ${C.green}`
-                      : "1px solid rgba(255,255,255,.09)",
-                    background: selected
-                      ? "linear-gradient(145deg, rgba(0,210,100,.16), rgba(0,210,100,.045))"
-                      : "linear-gradient(145deg, rgba(255,255,255,.055), rgba(255,255,255,.018))",
-                    opacity: outOfStock
-                      ? 0.45
-                      : 1,
-                    cursor:
-                      outOfStock || busy
-                        ? "not-allowed"
-                        : "pointer",
-                    transition:
-                      "transform .12s ease, border .12s ease, background .12s ease",
-                    display: "flex",
-                    flexDirection: "column",
-                    justifyContent:
-                      "space-between",
-                    gap: 8,
-                  }}
+                  title={outOfStock ? "Producto agotado" : `Agregar ${product.name} a la comanda`}
                 >
-                  {selected && (
-                    <span
-                      style={{
-                        position: "absolute",
-                        top: 8,
-                        right: 8,
-                        minWidth: 28,
-                        height: 28,
-                        padding: "0 7px",
-                        borderRadius: 999,
-                        background: C.green,
-                        color: "#06140c",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent:
-                          "center",
-                        fontSize: 13,
-                        fontWeight: 900,
-                      }}
-                    >
-                      {selected.cantidad}
-                    </span>
-                  )}
+                  <span className="waiter-product-mark" aria-hidden="true">
+                    {String(product.name || "?").trim().charAt(0).toUpperCase()}
+                  </span>
 
                   {promotion && (
-                    <span style={{ position: "absolute", top: 9, left: 9, padding: "3px 6px", borderRadius: 6, background: "rgba(129,140,248,.22)", color: "#c7d2fe", fontSize: 9, fontWeight: 900 }}>
+                    <span className="waiter-product-promotion">
                       {promotion.tipo === "2x1" ? "2×1" : "Oferta"}
                     </span>
                   )}
 
-                  <div
-                    style={{
-                      paddingRight: selected ? 28 : 0,
-                      paddingTop: promotion ? 20 : 0,
-                    }}
-                  >
-                    <div
-                      style={{
-                        fontWeight: 800,
-                        fontSize: 14,
-                        lineHeight: 1.25,
-                        minHeight: 36,
-                        color: "#ffffff",
-                      }}
-                    >
-                      {product.name}
-                    </div>
+                  {selected && (
+                    <span className="waiter-product-quantity" aria-label={`${selected.cantidad} en la comanda`}>
+                      {selected.cantidad}
+                    </span>
+                  )}
 
-                    {product.cat && (
-                      <div
-                        style={{
-                          color: "#d1d5db",
-                          fontSize: 10,
-                          marginTop: 4,
-                        }}
-                      >
-                        {product.cat}
-                      </div>
-                    )}
+                  <div className="waiter-product-info">
+                    <strong>{product.name}</strong>
+                    {product.cat && <span>{product.cat}</span>}
                   </div>
 
-                  <div>
-                    <div
-                      style={{
-                        color: C.green,
-                        fontWeight: 900,
-                        fontSize: 14,
-                      }}
-                    >
-                      {COP(product.price)}
-                    </div>
-
-                    <div className={`waiter-product-stock ${outOfStock ? "is-empty" : lowStock ? "is-low" : "is-available"}`}>
+                  <div className="waiter-product-details">
+                    <strong className="waiter-product-price">{COP(product.price)}</strong>
+                    <span className={`waiter-product-stock ${outOfStock ? "is-empty" : lowStock ? "is-low" : "is-available"}`}>
                       <i />
                       {outOfStock ? "Agotado" : lowStock ? `Solo ${stock} unidades` : `${stock} disponibles`}
-                    </div>
+                    </span>
+                    {!outOfStock && <span className="waiter-product-add" aria-hidden="true">＋ Agregar</span>}
                   </div>
                 </button>
               );
@@ -1010,24 +1010,15 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
           </div>
 
           {!visibleProducts.length && (
-            <div
-              style={{
-                textAlign: "center",
-                padding: "28px 10px",
-                color: C.sub,
-                fontSize: 13,
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 28,
-                  marginBottom: 7,
-                }}
-              >
-                🔎
-              </div>
-              No encontramos productos con
-              esos criterios.
+            <div className="waiter-catalogue-empty">
+              <span aria-hidden="true">⌕</span>
+              <strong>No encontramos productos</strong>
+              <p>Prueba con otro nombre o selecciona una categoría distinta.</p>
+              {(productSearch || selectedCategory !== "Todos") && (
+                <button type="button" onClick={() => { setProductSearch(""); setSelectedCategory("Todos"); }}>
+                  Limpiar búsqueda y filtros
+                </button>
+              )}
             </div>
           )}
 
@@ -1318,6 +1309,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
             disabled={
               busy ||
               !turno ||
+              !userId ||
               !items.length
             }
             onClick={submit}
@@ -1461,7 +1453,35 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
             </div>
           )}
 
-          {comandas.map(comanda => {
+          {turno && comandas.length > 0 && (
+            <div className="waiter-order-tabs" role="tablist" aria-label="Filtrar mis pedidos por estado">
+              {ORDER_STATUS_GROUPS.map(group => (
+                <button
+                  key={group.id}
+                  id={`waiter-order-tab-${group.id}`}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeOrderStatus === group.id}
+                  aria-controls="waiter-orders-panel"
+                  className={`waiter-order-tab waiter-order-tab--${group.id}${activeOrderStatus === group.id ? " is-active" : ""}`}
+                  onClick={() => setActiveOrderStatus(group.id)}
+                >
+                  <span>{group.title}</span><b>{ordersForStatus(group.id).length}</b>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {turno && comandas.length > 0 && (
+            <div
+              id="waiter-orders-panel"
+              role="tabpanel"
+              aria-labelledby={`waiter-order-tab-${activeOrderStatus}`}
+              className="waiter-orders-panel"
+            >
+              {visibleOrders.length === 0 ? (
+                <div className="waiter-orders-empty">No hay pedidos en esta categoría.</div>
+              ) : visibleOrders.map(comanda => {
             const isPending =
               comanda.estado === "enviada";
 
@@ -1510,9 +1530,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                       }}
                     >
                       Mesero: {comanda.mesero_nombre || userName} · Pedido de las{" "}
-                      {formatTime(
-                        comanda.creado_en
-                      )}
+                      {formatLocalTime(comanda.creado_en)}
                     </div>
                   </div>
 
@@ -1669,6 +1687,26 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                   </div>
                 )}
 
+                {comanda.estado === "pagada" && (
+                  <div className="waiter-invoice-action">
+                    <button
+                      type="button"
+                      className="waiter-invoice-button"
+                      disabled={Boolean(printingId) || !userId}
+                      onClick={() => printInvoice(comanda)}
+                    >
+                      <span aria-hidden="true">{printingId === comanda.id ? "…" : "▤"}</span>
+                      {printingId === comanda.id ? "Enviando a impresora…" : "Imprimir factura"}
+                    </button>
+                    <span className="waiter-invoice-hint">Impresora de barra · Printer001</span>
+                    {printMessages[comanda.id] && (
+                      <div className={`waiter-invoice-message${printMessages[comanda.id].success ? " is-success" : " is-error"}`} role="status">
+                        {printMessages[comanda.id].text}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {isEditing && (
                   <div
                     style={{
@@ -1683,8 +1721,10 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                   </div>
                 )}
               </div>
-            );
-          })}
+              );
+            })}
+            </div>
+          )}
         </div>
       </div>
     </div>

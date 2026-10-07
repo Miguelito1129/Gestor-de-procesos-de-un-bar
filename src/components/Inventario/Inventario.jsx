@@ -1,24 +1,100 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { C, s, COP } from "../../constants/theme.js";
 import { CAT_COLORS } from "../../constants/roles.js";
 import { uid } from "../../utils/helpers.js";
 import { localDeleteProductos, localInsert } from "../../lib/localApi.js";
-import { Badge, Metric, SectionTitle } from "../common/index.jsx";
+import { Badge } from "../common/index.jsx";
 
 export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('Todos');
+  const [stockFilter, setStockFilter] = useState('Todos');
   const [showAdd, setShowAdd] = useState(false);
   const [f, setF] = useState({name:'',cat:'Cerveza',price:'',stock:'',min:''});
   const [importMsg, setImportMsg] = useState('');
   const [showConfirmBorrar, setShowConfirmBorrar] = useState(false);
   const fileRef = useRef(null);
+  const dragTimerRef = useRef(null);
+  const dragRef = useRef(null);
+  const dropRef = useRef(null);
+  const [draggingId, setDraggingId] = useState(null);
+  const [dropTarget, setDropTarget] = useState(null);
 
-  const productos = negocio.productos;
+  const productos = useMemo(
+    () => (negocio.productos || [])
+      .map((product, index) => ({ ...product, _originalIndex: index }))
+      .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0) || a._originalIndex - b._originalIndex)
+      .map(({ _originalIndex, ...product }) => product),
+    [negocio.productos]
+  );
   const setProductos = useCallback(fn => onUpdateNegocio({...negocio, productos: typeof fn==='function'?fn(negocio.productos):fn}), [negocio, onUpdateNegocio]);
+  const canReorder = !readOnly && !search && catFilter === 'Todos' && stockFilter === 'Todos';
+  useEffect(() => () => window.clearTimeout(dragTimerRef.current), []);
+  const startProductDrag = (event, productId) => {
+    if (!canReorder || event.button !== 0) return;
+    event.preventDefault();
+    window.clearTimeout(dragTimerRef.current);
+    dragRef.current = { productId, pointerId: event.pointerId };
+    dropRef.current = null;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragTimerRef.current = window.setTimeout(() => {
+      setDraggingId(productId);
+    }, 180);
+  };
+  const trackProductDrag = event => {
+    if (dragRef.current?.pointerId !== event.pointerId || draggingId !== dragRef.current.productId) return;
+    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('[data-inventory-product-id]');
+    const targetId = target?.getAttribute('data-inventory-product-id');
+    if (!targetId || targetId === dragRef.current.productId) {
+      dropRef.current = null;
+      setDropTarget(null);
+      return;
+    }
+    const rect = target.getBoundingClientRect();
+    const before = event.clientY < rect.top + rect.height / 2;
+    dropRef.current = { targetId, before };
+    setDropTarget({ targetId, before });
+  };
+  const finishProductDrag = event => {
+    if (dragRef.current?.pointerId !== event.pointerId) return;
+    window.clearTimeout(dragTimerRef.current);
+    const sourceId = dragRef.current.productId;
+    const destination = dropRef.current;
+    if (destination && destination.targetId !== sourceId && draggingId === sourceId) {
+      const current = [...productos];
+      const sourceIndex = current.findIndex(product => product.id === sourceId);
+      const [moved] = current.splice(sourceIndex, 1);
+      const targetIndex = current.findIndex(product => product.id === destination.targetId);
+      const insertIndex = targetIndex + (destination.before ? 0 : 1);
+      current.splice(insertIndex, 0, moved);
+      setProductos(current.map((product, sort_order) => ({ ...product, sort_order })));
+    }
+    dragRef.current = null;
+    dropRef.current = null;
+    setDraggingId(null);
+    setDropTarget(null);
+  };
+  const cancelProductDrag = event => {
+    if (dragRef.current?.pointerId !== event.pointerId) return;
+    window.clearTimeout(dragTimerRef.current);
+    dragRef.current = null;
+    dropRef.current = null;
+    setDraggingId(null);
+    setDropTarget(null);
+  };
   const cats = ['Todos', ...new Set(productos.map(p=>p.cat))];
-  const filtered = productos.filter(p=>(catFilter==='Todos'||p.cat===catFilter)&&p.name.toLowerCase().includes(search.toLowerCase()));
-  const low = productos.filter(p=>p.stock<=p.min&&p.min>0);
+  const low = productos.filter(p=>Number(p.stock)<=Number(p.min)&&Number(p.min)>0);
+  const outOfStock = productos.filter(p=>Number(p.stock)<=0&&Number(p.min)>0);
+  const filtered = productos.filter(p=>{
+    const stock = Number(p.stock)||0;
+    const minimum = Number(p.min)||0;
+    const isOut = stock<=0&&minimum>0;
+    const isLow = stock>0&&stock<=minimum&&minimum>0;
+    const matchesStock = stockFilter==='Todos'||(stockFilter==='Agotados'&&isOut)||(stockFilter==='Bajo stock'&&isLow)||(stockFilter==='En orden'&&!isOut&&!isLow);
+    return (catFilter==='Todos'||p.cat===catFilter)
+      && String(p.name||'').toLocaleLowerCase('es').includes(search.toLocaleLowerCase('es'))
+      && matchesStock;
+  });
 
   const loadXLSX = () => new Promise((res,rej)=>{
     if(window.XLSX){res(window.XLSX);return;}
@@ -109,26 +185,79 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
   };
 
   return (
-    <div>
-      <SectionTitle action={
-        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-          <select style={{...s.sel,width:120}} value={catFilter} onChange={e=>setCatFilter(e.target.value)}>{cats.map(c=><option key={c}>{c}</option>)}</select>
-          <input style={{...s.inp,width:160}} placeholder="Buscar..." value={search} onChange={e=>setSearch(e.target.value)}/>
-          {!readOnly&&<>
-            <button style={s.btn('primary')} onClick={()=>setShowAdd(!showAdd)}>+ Producto</button>
-            <button style={{...s.btn(),color:C.cyan,border:`1px solid ${C.cyan}30`}} onClick={()=>fileRef.current.click()}>📥 Importar Excel</button>
-            <button style={{...s.btn(),color:C.green,border:`1px solid ${C.green}30`}} onClick={downloadInventario} title="Descargar inventario actual en Excel">📤 Exportar</button>
-            <button style={{...s.btn(),color:C.amber,border:`1px solid ${C.amber}30`}} onClick={downloadTemplate} title="Descargar plantilla Excel vacía para llenar">📋 Plantilla</button>
-            <button style={{...s.btn(),color:C.red,border:`1px solid ${C.red}30`}} onClick={()=>setShowConfirmBorrar(true)}>🗑 Borrar todo</button>
-            <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" style={{display:'none'}} onChange={handleImport}/>
-          </>}
+    <div className="inventory-page">
+      <header className="inventory-hero">
+        <div>
+          <span className="inventory-hero__eyebrow">CONTROL DE PRODUCTOS</span>
+          <div className="inventory-hero__title-row">
+            <h1>Inventario</h1>
+            {readOnly&&<Badge color={C.sub} small>Solo lectura</Badge>}
+          </div>
+          <p>{negocio.name} · Revisa existencias, precios y alertas de stock en un solo lugar.</p>
         </div>
-      }>Inventario — {negocio.name}{readOnly&&<Badge color={C.sub} small>Solo lectura</Badge>}</SectionTitle>
+        {!readOnly&&<button className="inventory-primary-action" type="button" onClick={()=>setShowAdd(!showAdd)}>
+          <span aria-hidden="true">{showAdd?'×':'＋'}</span>{showAdd?'Cerrar':'Agregar producto'}
+        </button>}
+      </header>
+
+      <div className="inventory-summary">
+        <div className="inventory-summary__item">
+          <span className="inventory-summary__icon">▦</span>
+          <div><span>Productos registrados</span><strong>{productos.length}</strong></div>
+        </div>
+        <button className={`inventory-summary__item inventory-summary__item--warning${stockFilter==='Bajo stock'?' is-selected':''}`} type="button" onClick={()=>setStockFilter(stockFilter==='Bajo stock'?'Todos':'Bajo stock')}>
+          <span className="inventory-summary__icon">!</span>
+          <div><span>Por debajo del mínimo</span><strong>{low.filter(p=>Number(p.stock)>0).length}</strong></div>
+        </button>
+        <button className={`inventory-summary__item inventory-summary__item--danger${stockFilter==='Agotados'?' is-selected':''}`} type="button" onClick={()=>setStockFilter(stockFilter==='Agotados'?'Todos':'Agotados')}>
+          <span className="inventory-summary__icon">↓</span>
+          <div><span>Agotados</span><strong>{outOfStock.length}</strong></div>
+        </button>
+        <button className={`inventory-summary__item inventory-summary__item--healthy${stockFilter==='En orden'?' is-selected':''}`} type="button" onClick={()=>setStockFilter(stockFilter==='En orden'?'Todos':'En orden')}>
+          <span className="inventory-summary__icon">✓</span>
+          <div><span>Con stock suficiente</span><strong>{productos.filter(p=>Number(p.stock)>Number(p.min)||Number(p.min)<=0&&Number(p.stock)>0).length}</strong></div>
+        </button>
+      </div>
+
+      <div className="inventory-toolbar">
+        <label className="inventory-search">
+          <span aria-hidden="true">⌕</span>
+          <input aria-label="Buscar productos" placeholder="Buscar por nombre..." value={search} onChange={e=>setSearch(e.target.value)}/>
+          {search&&<button type="button" onClick={()=>setSearch('')} aria-label="Limpiar búsqueda">×</button>}
+        </label>
+        <label className="inventory-category-select">
+          <span>Categoría</span>
+          <select style={s.sel} value={catFilter} onChange={e=>setCatFilter(e.target.value)}>{cats.map(c=><option key={c}>{c}</option>)}</select>
+        </label>
+        {!readOnly&&<div className="inventory-tools">
+          <button type="button" onClick={()=>fileRef.current?.click()} title="Importar productos desde Excel">↥ <span>Importar</span></button>
+          <button type="button" onClick={downloadInventario} title="Descargar inventario actual en Excel">↧ <span>Exportar</span></button>
+          <button type="button" onClick={downloadTemplate} title="Descargar plantilla de Excel">▤ <span>Plantilla</span></button>
+          <button type="button" className="inventory-tools__danger" onClick={()=>setShowConfirmBorrar(true)} title="Borrar todo el inventario">× <span>Borrar todo</span></button>
+          <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" style={{display:'none'}} onChange={handleImport}/>
+        </div>}
+      </div>
+
+      <div className="inventory-filter-row" role="group" aria-label="Filtrar productos por existencias">
+        {['Todos','Bajo stock','Agotados','En orden'].map(status=>(
+          <button key={status} type="button" className={`inventory-filter${stockFilter===status?' is-active':''}${status==='Agotados'?' is-danger':status==='Bajo stock'?' is-warning':status==='En orden'?' is-healthy':''}`} onClick={()=>setStockFilter(status)}>
+            {status}<span>{status==='Todos'?productos.length:status==='Agotados'?outOfStock.length:status==='Bajo stock'?low.filter(p=>Number(p.stock)>0).length:productos.filter(p=>Number(p.stock)>Number(p.min)||Number(p.min)<=0&&Number(p.stock)>0).length}</span>
+          </button>
+        ))}
+        <span className="inventory-result-count">Mostrando <strong>{filtered.length}</strong> de {productos.length}</span>
+      </div>
+      {!readOnly && (
+        <div className="inventory-order-hint">
+          {canReorder
+            ? "Mantén presionada el asa ⋮⋮ y arrastra cada producto hasta la posición deseada."
+            : "Limpia la búsqueda y los filtros para poder reordenar los productos."}
+        </div>
+      )}
 
       {importMsg&&(
-        <div style={{padding:'7px 12px',background:importMsg.startsWith('✓')?C.green+'18':C.amber+'18',border:`1px solid ${importMsg.startsWith('✓')?C.green:C.amber}40`,borderRadius:8,fontSize:12,marginBottom:'1rem',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <div className={`inventory-message${importMsg.startsWith('✓')?' is-success':' is-warning'}`}>
           <span style={{color:importMsg.startsWith('✓')?C.green:C.amber}}>{importMsg}</span>
-          <button style={{background:'none',border:'none',cursor:'pointer',color:C.sub,fontSize:16}} onClick={()=>setImportMsg('')}>✕</button>
+          <button type="button" onClick={()=>setImportMsg('')} aria-label="Cerrar mensaje">✕</button>
         </div>
       )}
 
@@ -138,14 +267,14 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
           <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
             {productos.filter(p=>p.stock<0).map(p=><span key={p.id} style={{background:C.red+'22',color:C.red,padding:'2px 8px',borderRadius:6,fontWeight:700}}>{p.name}: {p.stock}</span>)}
           </div>
-          <div style={{fontSize:11,color:C.red,marginTop:6}}>Corrige el stock manualmente en la tabla.</div>
+          <div style={{fontSize:11,color:C.red,marginTop:6}}>Corrige las existencias del producto para normalizar el inventario.</div>
         </div>
       )}
 
       {showConfirmBorrar&&(
         <div style={{...s.card,borderColor:C.red+'60',marginBottom:'1rem',padding:'1rem'}}>
           <div style={{fontWeight:700,color:C.red,marginBottom:8}}>⚠ ¿Borrar todo el inventario ({productos.length} productos)?</div>
-          <div style={{fontSize:12,color:C.sub,marginBottom:12}}>Borrará local y en Supabase. No se puede deshacer.</div>
+          <div style={{fontSize:12,color:C.sub,marginBottom:12}}>Borrará todos los productos de este negocio en SQLite. No se puede deshacer.</div>
           <div style={{display:'flex',gap:8}}>
             <button style={s.btn('danger')} onClick={async()=>{
               await localDeleteProductos(negocio.id);
@@ -160,17 +289,10 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
 
       {!readOnly&&<div style={{marginBottom:'0.75rem',padding:'7px 12px',background:C.surface,borderRadius:8,fontSize:11,color:C.sub,border:`1px solid ${C.border}`}}>📋 <strong style={{color:C.text}}>Formato Excel:</strong> columnas <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>nombre</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>categoria</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>precio</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>stock</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>minimo</code></div>}
 
-      <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:'1.25rem'}}>
-        <Metric label="Total"    value={productos.length}/>
-        <Metric label="Bajo Stock" value={low.filter(p=>p.stock>0).length} color={C.amber}/>
-        <Metric label="Agotados"   value={productos.filter(p=>p.stock===0&&p.min>0).length} color={C.red}/>
-        <Metric label="En Orden"   value={productos.filter(p=>p.stock>p.min).length} color={C.green}/>
-      </div>
-
       {showAdd&&!readOnly&&(
-        <div style={{...s.card,marginBottom:'1.25rem',borderColor:negocio.color+'40'}}>
-          <div style={{fontWeight:700,marginBottom:'0.75rem',fontSize:13}}>Nuevo Producto</div>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10}}>
+        <div className="inventory-add-panel">
+          <div className="inventory-add-panel__heading"><span>＋</span><div><strong>Nuevo producto</strong><p>Agrega un producto y define su nivel de inventario.</p></div></div>
+          <div className="inventory-add-panel__fields">
             <div><div style={s.label}>Nombre</div><input style={s.inp} value={f.name} onChange={e=>setF(p=>({...p,name:e.target.value}))}/></div>
             <div><div style={s.label}>Categoría</div>
               <select style={s.sel} value={f.cat} onChange={e=>setF(p=>({...p,cat:e.target.value}))}>
@@ -181,50 +303,90 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
             <div><div style={s.label}>Stock</div><input style={s.inp} type="number" value={f.stock} onChange={e=>setF(p=>({...p,stock:e.target.value}))}/></div>
             <div><div style={s.label}>Mínimo</div><input style={s.inp} type="number" value={f.min} onChange={e=>setF(p=>({...p,min:e.target.value}))}/></div>
           </div>
-          <div style={{marginTop:10,display:'flex',gap:8}}>
-            <button style={s.btn('primary')} onClick={()=>{
+          <div className="inventory-add-panel__actions">
+            <button type="button" style={s.btn('primary')} onClick={()=>{
               if(!f.name) return;
               setProductos(p=>[...p,{...f,id:uid(),sort_order:p.length,price:parseInt(f.price)||0,stock:parseInt(f.stock)||0,min:parseInt(f.min)||0}]);
+              setF({name:'',cat:'Cerveza',price:'',stock:'',min:''});
               setShowAdd(false);
             }}>Guardar</button>
-            <button style={s.btn()} onClick={()=>setShowAdd(false)}>Cancelar</button>
+            <button type="button" style={s.btn('ghost')} onClick={()=>setShowAdd(false)}>Cancelar</button>
           </div>
         </div>
       )}
 
-      <div style={s.card}>
-        <table style={{width:'100%',borderCollapse:'collapse'}}>
-          <thead><tr style={{background:C.surface}}>{['Producto','Cat.','Precio','Stock','Mín.','Estado',''].map(h=><th key={h} style={s.th}>{h}</th>)}</tr></thead>
-          <tbody>
-            {filtered.length===0?(<tr><td colSpan={7} style={{padding:'2rem',textAlign:'center',color:C.sub,fontSize:13}}>Sin productos</td></tr>):
-            filtered.map((p,i)=>{
-              const out=p.stock===0&&p.min>0; const lowS=p.stock<=p.min&&!out&&p.min>0;
-              const bg=out?C.red+'0a':lowS?C.amber+'08':i%2===0?C.rowA:C.rowB;
-              return(
-                <tr key={p.id} style={{background:bg}}>
-                  <td style={{...s.td(i),fontWeight:500,fontSize:11,background:bg}}>{p.name}</td>
-                  <td style={{...s.td(i),background:bg}}><Badge color={CAT_COLORS[p.cat]||C.muted} small>{p.cat}</Badge></td>
-                  <td style={{...s.td(i),background:bg}}>
-                    {readOnly
-                      ? (p.price>0?COP(p.price):<span style={{color:C.sub}}>—</span>)
-                      : <input type="number" min="0" style={{...s.inp,width:110,padding:'4px 8px',textAlign:'right',fontSize:12}} value={p.price} onChange={e=>setProductos(prev=>prev.map(x=>x.id===p.id?{...x,price:Math.max(0,parseInt(e.target.value)||0)}:x))}/>
-                    }
-                  </td>
-                  <td style={{...s.td(i),background:bg}}>
-                    {readOnly?<span style={{fontWeight:800,fontSize:14,color:out?C.red:lowS?C.amber:C.green}}>{p.stock}</span>:(
-                      <input type="number" min="0" style={{...s.inp,width:72,padding:'4px 8px',textAlign:'center',fontWeight:800,fontSize:13,color:out?C.red:lowS?C.amber:C.green,border:`1px solid ${out?C.red:lowS?C.amber:C.border}60`}} value={p.stock} onChange={e=>setProductos(prev=>prev.map(x=>x.id===p.id?{...x,stock:Math.max(0,parseInt(e.target.value)||0)}:x))}/>
-                    )}
-                  </td>
-                  <td style={{...s.td(i),color:C.sub,background:bg}}>{p.min}</td>
-                  <td style={{...s.td(i),background:bg}}><Badge color={out?C.red:lowS?C.amber:C.green} small>{out?'Agotado':lowS?'Bajo':'OK'}</Badge></td>
-                  <td style={{...s.td(i),background:bg}}>
-                    {!readOnly&&<button style={{background:'none',border:'none',color:C.muted,cursor:'pointer',fontSize:13,padding:'2px 6px'}} onClick={()=>setProductos(prev=>prev.filter(x=>x.id!==p.id))} title="Eliminar">✕</button>}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      <div className="inventory-table-panel">
+        {filtered.length===0?(
+          <div className="inventory-empty">
+            <span>⌕</span><strong>{productos.length?'No hay productos con estos filtros':'Aún no hay productos'}</strong>
+            <p>{productos.length?'Prueba con otra búsqueda o limpia los filtros.':'Agrega productos o importa tu inventario desde Excel.'}</p>
+            {(search||catFilter!=='Todos'||stockFilter!=='Todos')&&<button type="button" onClick={()=>{setSearch('');setCatFilter('Todos');setStockFilter('Todos');}}>Limpiar filtros</button>}
+          </div>
+        ):(
+          <div className="inventory-table-wrap">
+            <table className="inventory-table">
+              <thead><tr>{['Producto','Categoría','Precio de venta','Existencias','Mínimo','Estado',...(!readOnly?['Orden']:[]),''].map(h=><th key={h}>{h}</th>)}</tr></thead>
+              <tbody>
+                {filtered.map((p,i)=>{
+                  const productIndex = productos.findIndex(product => product.id === p.id);
+                  const stock=Number(p.stock)||0;
+                  const minimum=Number(p.min)||0;
+                  const out=stock<=0&&minimum>0;
+                  const lowS=stock>0&&stock<=minimum&&minimum>0;
+                  const status=out?'Agotado':lowS?'Reponer':'Disponible';
+                  const color=out?C.red:lowS?C.amber:C.green;
+                  const progress=minimum>0?Math.min(100,Math.max(5,stock/minimum*50)):100;
+                  return(
+                    <tr
+                      key={p.id}
+                      data-inventory-product-id={p.id}
+                      className={`${out?'is-out':lowS?'is-low':''}${draggingId===p.id?' is-dragging':''}${dropTarget?.targetId===p.id?dropTarget.before?' is-drop-before':' is-drop-after':''}`}
+                      onPointerMove={trackProductDrag}
+                      onPointerUp={finishProductDrag}
+                      onPointerCancel={cancelProductDrag}
+                    >
+                      <td className="inventory-table__product">
+                        <span className="inventory-product-mark" style={{'--product-color':CAT_COLORS[p.cat]||C.indigo}} aria-hidden="true">{String(p.name||'?').trim().slice(0,1).toUpperCase()}</span>
+                        <div><strong>{p.name}</strong><span>{status}</span></div>
+                      </td>
+                      <td><Badge color={CAT_COLORS[p.cat]||C.muted} small>{p.cat}</Badge></td>
+                      <td>
+                        {readOnly
+                          ? <strong className="inventory-price">{p.price>0?COP(p.price):'—'}</strong>
+                          : <label className="inventory-inline-field"><span className="inventory-inline-field__prefix">$</span><input aria-label={`Precio de ${p.name}`} type="number" min="0" value={p.price} onChange={e=>setProductos(prev=>prev.map(x=>x.id===p.id?{...x,price:Math.max(0,parseInt(e.target.value)||0)}:x))}/></label>
+                        }
+                      </td>
+                      <td>
+                        <div className="inventory-stock-cell">
+                          {readOnly?<strong className="inventory-stock-value" style={{color}}>{stock}</strong>:<label className={`inventory-inline-field inventory-inline-field--stock${out?' is-out':lowS?' is-low':''}`}><input aria-label={`Existencias de ${p.name}`} type="number" min="0" value={p.stock} onChange={e=>setProductos(prev=>prev.map(x=>x.id===p.id?{...x,stock:Math.max(0,parseInt(e.target.value)||0)}:x))}/><span>uds.</span></label>}
+                          <span className="inventory-stock-track"><i style={{width:`${progress}%`,backgroundColor:color}}/></span>
+                        </div>
+                      </td>
+                      <td><span className="inventory-minimum">{minimum} uds.</span></td>
+                      <td><span className={`inventory-status${out?' is-out':lowS?' is-low':' is-good'}`}><i/>{status}</span></td>
+                      {!readOnly&&<td>
+                        <div className="inventory-order-controls">
+                          <button
+                            type="button"
+                            className="inventory-drag-handle"
+                            onPointerDown={event=>startProductDrag(event,p.id)}
+                            aria-label={`Mantener presionado y arrastrar ${p.name} para cambiar su orden`}
+                            title="Mantén presionado y arrastra para ordenar"
+                            disabled={!canReorder}
+                          >
+                            ⠿
+                          </button>
+                          <span>{productIndex+1}</span>
+                        </div>
+                      </td>}
+                      <td>{!readOnly&&<button className="inventory-delete" type="button" onClick={()=>setProductos(prev=>prev.filter(x=>x.id!==p.id))} aria-label={`Eliminar ${p.name}`} title="Eliminar producto">×</button>}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { C, s, COP } from "../../constants/theme.js";
 import { localFetch, localInsert, localUpdate } from "../../lib/localApi.js";
 import { uid } from "../../utils/helpers.js";
+import { formatLocalTime } from "../../utils/dateTime.js";
 import { Badge, Metric, SectionTitle } from "../common/index.jsx";
+import { useAuth } from "../../hooks/useAuth.jsx";
 import { useTurnoData } from "../../hooks/useTurnoData.js";
 
 const STATUS_LABEL = {
@@ -17,20 +19,72 @@ const STATUS_COLOR = {
   pagada: C.green,
   cancelada: C.red,
 };
+const PROMOTION_LABEL = {
+  "2x1": "2×1",
+  precio_especial: "Precio especial",
+  combo: "Combo",
+  cortesia: "Cortesía",
+  producto_mas_cortesia: "Producto + cortesía",
+};
+
+const promotionTypesOf = value => {
+  if (Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(value || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+const STATUS_GROUPS = [
+  { id: "enviada", title: "Pendientes por autorizar", description: "Pedidos nuevos que esperan revisión de stock y autorización." },
+  { id: "entregada_falta_pago", title: "Entregados · falta pago", description: "Pedidos despachados que esperan confirmación de pago del mesero." },
+  { id: "pagada", title: "Pagados", description: "Pedidos cuyo pago ya fue confirmado." },
+  { id: "cancelada", title: "Cancelados", description: "Pedidos cancelados; no cuentan como ventas." },
+  { id: "otros", title: "Otros estados", description: "Pedidos con un estado distinto a los habituales." },
+];
 
 export default function BarraWorkspace({ negocio, userName }) {
-  const { turno, comandas, setComandas, productos, setProductos } = useTurnoData(negocio.id);
+  const { users } = useAuth();
+  const { turno, setTurno, comandas, setComandas, productos, setProductos } = useTurnoData(negocio.id);
   const [entry, setEntry] = useState({ productoId: "", cantidad: "", justificacion: "", comprobante: "" });
   const [entryFileName, setEntryFileName] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
-  const [expandedId, setExpandedId] = useState(null);
+  const [expandedIds, setExpandedIds] = useState(() => new Set());
   const [itemDetails, setItemDetails] = useState({});
+  const loadingDetails = useRef(new Set());
+  const loadedOrderRevisions = useRef(new Map());
+  const autoExpandedPending = useRef(new Set());
   const [meseroFilter, setMeseroFilter] = useState("todos");
+  const [activeStatus, setActiveStatus] = useState("enviada");
+  const [activeModule, setActiveModule] = useState("orders");
+  const [savingWaiters, setSavingWaiters] = useState(false);
+  const [waiterAccessMessage, setWaiterAccessMessage] = useState("");
+  const authorizedMeseroIds = Array.isArray(turno?.meseros_ids) ? turno.meseros_ids.map(String) : [];
+  const negocioMeseros = (users || []).filter(account => {
+    if (account.role !== "mesero") return false;
+    if (account.negocios === "all") return true;
+    if (Array.isArray(account.negocios)) return account.negocios.some(id => String(id) === String(negocio.id));
+    if (typeof account.negocios === "string") {
+      try {
+        const businessIds = JSON.parse(account.negocios);
+        return Array.isArray(businessIds) && businessIds.some(id => String(id) === String(negocio.id));
+      } catch {
+        return account.negocios === negocio.id;
+      }
+    }
+    return false;
+  }).sort((first, second) =>
+    String(first.name || "").localeCompare(String(second.name || ""), "es")
+  );
   const meseros = [...new Map(comandas.map(comanda => {
-    const id = comanda.mesero_id || comanda.mesero_nombre || "sin_mesero";
-    return [id, { id, nombre: comanda.mesero_nombre || comanda.mesero_id || "Sin mesero" }];
-  }).values())].sort((first, second) => first.nombre.localeCompare(second.nombre, "es"));
+    const id = String(comanda.mesero_id || comanda.mesero_nombre || "sin_mesero");
+    const nombre = String(comanda.mesero_nombre || comanda.mesero_id || "Sin mesero");
+    return [id, { id, nombre }];
+  })).values()].sort((first, second) =>
+    String(first?.nombre || "").localeCompare(String(second?.nombre || ""), "es")
+  );
   const comandasVisibles = meseroFilter === "todos"
     ? comandas
     : comandas.filter(comanda => (comanda.mesero_id || comanda.mesero_nombre || "sin_mesero") === meseroFilter);
@@ -38,7 +92,31 @@ export default function BarraWorkspace({ negocio, userName }) {
     (comanda.mesero_id || comanda.mesero_nombre || "sin_mesero") === meseroId
   ).length;
   const pending = comandasVisibles.filter(comanda => comanda.estado === "enviada").length;
-  const ventasTotal = comandasVisibles.reduce((sum, comanda) => sum + Number(comanda.total || 0), 0);
+  const getStatusOrders = statusId => comandasVisibles.filter(comanda =>
+    statusId === "otros"
+      ? !STATUS_GROUPS.some(group => group.id !== "otros" && group.id === comanda.estado)
+      : comanda.estado === statusId
+  );
+  const ventasTotal = comandasVisibles
+    .filter(comanda => comanda.estado !== "cancelada")
+    .reduce((sum, comanda) => sum + Number(comanda.total || 0), 0);
+
+  const toggleWaiterAccess = async (account, enabled) => {
+    if (!turno || savingWaiters) return;
+    setSavingWaiters(true);
+    setWaiterAccessMessage("");
+    const nextIds = enabled
+      ? [...new Set([...authorizedMeseroIds, String(account.id)])]
+      : authorizedMeseroIds.filter(id => id !== String(account.id));
+    const saved = await localUpdate("turnos", { id: turno.id }, { meseros_ids: nextIds });
+    if (saved) {
+      setTurno(current => current?.id === turno.id ? { ...current, meseros_ids: nextIds } : current);
+      setWaiterAccessMessage(`${account.name || "Mesero"} ${enabled ? "activado" : "desactivado"} para este turno.`);
+    } else {
+      setWaiterAccessMessage("No fue posible actualizar los permisos del turno.");
+    }
+    setSavingWaiters(false);
+  };
 
   const getStockCheck = comanda => {
     const details = itemDetails[comanda.id] || [];
@@ -55,16 +133,14 @@ export default function BarraWorkspace({ negocio, userName }) {
     });
   };
 
-  const toggleDetails = async comanda => {
-    if (expandedId === comanda.id) {
-      setExpandedId(null);
-      return;
-    }
-    if (!itemDetails[comanda.id]) {
+  const loadComandaDetails = async (comanda, force = false) => {
+    if ((!force && itemDetails[comanda.id]) || loadingDetails.current.has(comanda.id)) return false;
+    loadingDetails.current.add(comanda.id);
+    try {
       const rows = await localFetch("comanda_items", `comanda_id=eq.${comanda.id}&select=*`);
       if (!rows) {
         setMessage("No fue posible cargar los productos de la comanda.");
-        return;
+        return false;
       }
       const names = new Map(productos.map(product => [product.id, product.name]));
       setItemDetails(current => ({
@@ -72,10 +148,48 @@ export default function BarraWorkspace({ negocio, userName }) {
         [comanda.id]: rows.map(row => ({
           ...row,
           nombre: names.get(row.producto_id) || "Producto no disponible",
+          promociones_aplicadas: promotionTypesOf(row.promociones_aplicadas),
         })),
       }));
+      return true;
+    } finally {
+      loadingDetails.current.delete(comanda.id);
     }
-    setExpandedId(comanda.id);
+  };
+
+  useEffect(() => {
+    const pendingOrders = comandas.filter(comanda => comanda.estado === "enviada");
+    const arrivingOrders = pendingOrders.filter(comanda => !autoExpandedPending.current.has(comanda.id));
+    if (arrivingOrders.length) {
+      arrivingOrders.forEach(comanda => autoExpandedPending.current.add(comanda.id));
+      setExpandedIds(current => new Set([...current, ...arrivingOrders.map(comanda => comanda.id)]));
+    }
+    pendingOrders.forEach(comanda => {
+      const revision = comanda.actualizada_en;
+      const previousRevision = loadedOrderRevisions.current.get(comanda.id);
+      const needsRefresh = !itemDetails[comanda.id]
+        || (revision && previousRevision && revision !== previousRevision);
+      if (needsRefresh) {
+        void loadComandaDetails(comanda, Boolean(itemDetails[comanda.id])).then(loaded => {
+          if (loaded && revision) loadedOrderRevisions.current.set(comanda.id, revision);
+        });
+      } else if (revision && !previousRevision) {
+        loadedOrderRevisions.current.set(comanda.id, revision);
+      }
+    });
+  }, [comandas, productos, itemDetails]);
+
+  const toggleDetails = async comanda => {
+    if (expandedIds.has(comanda.id)) {
+      setExpandedIds(current => {
+        const next = new Set(current);
+        next.delete(comanda.id);
+        return next;
+      });
+      return;
+    }
+    if (!itemDetails[comanda.id] && !await loadComandaDetails(comanda)) return;
+    setExpandedIds(current => new Set([...current, comanda.id]));
   };
 
   const dispatch = async comanda => {
@@ -180,6 +294,51 @@ export default function BarraWorkspace({ negocio, userName }) {
         <Metric label="Pendientes" value={pending} color={pending > 0 ? C.amber : C.sub} icon="🧾" />
         <Metric label="Ventas" value={COP(ventasTotal)} color={C.green} icon="💰" />
       </div>
+      <div className="barra-module-tabs" role="tablist" aria-label="Módulos de Barra">
+        <button type="button" role="tab" aria-selected={activeModule === "orders"} className={activeModule === "orders" ? "is-active" : ""} onClick={() => setActiveModule("orders")}>
+          Comandas
+        </button>
+        <button type="button" role="tab" aria-selected={activeModule === "waiters"} className={activeModule === "waiters" ? "is-active" : ""} onClick={() => setActiveModule("waiters")}>
+          Meseros del turno <b>{authorizedMeseroIds.length}/{negocioMeseros.length}</b>
+        </button>
+      </div>
+      {activeModule === "waiters" ? (
+        <section className="barra-waiter-access">
+          <header className="barra-waiter-access__heading">
+            <div>
+              <h2>Acceso de meseros</h2>
+              <p>Activa únicamente las cuentas autorizadas para enviar pedidos en este turno.</p>
+            </div>
+            <span>{authorizedMeseroIds.length} activos</span>
+          </header>
+          {!turno && <div className="barra-waiter-access__notice">No hay un turno abierto. El gerente debe abrir la planilla antes de habilitar meseros.</div>}
+          {waiterAccessMessage && <div role="status" className={`barra-waiter-access__message${waiterAccessMessage.startsWith("No fue") ? " is-error" : ""}`}>{waiterAccessMessage}</div>}
+          {!negocioMeseros.length
+            ? <div className="barra-waiter-access__empty">No hay cuentas de mesero asociadas a este negocio. El administrador maestro o el gerente pueden asignarlas desde Gestión de Usuarios.</div>
+            : <div className="barra-waiter-access__list">
+              {negocioMeseros.map(account => {
+                const enabled = authorizedMeseroIds.includes(String(account.id));
+                return (
+                  <label key={account.id} className={`barra-waiter-access__item${enabled ? " is-enabled" : ""}`}>
+                    <span className="barra-waiter-access__identity">
+                      <strong>{account.name || "Mesero"}</strong>
+                      <small>{account.email}</small>
+                    </span>
+                    <span className="barra-waiter-access__toggle">
+                      <input
+                        type="checkbox"
+                        checked={enabled}
+                        disabled={!turno || savingWaiters}
+                        onChange={event => void toggleWaiterAccess(account, event.target.checked)}
+                      />
+                      <span>{enabled ? "Activo" : "Inactivo"}</span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>}
+        </section>
+      ) : <>
       <details style={{ ...s.card, marginBottom: 16 }}>
         <summary style={{ cursor: "pointer", fontWeight: 700 }}>➕ Entrada urgente de inventario</summary>
         <div style={{ color: C.sub, fontSize: 12, margin: "8px 0 12px" }}>Justificación obligatoria. Factura opcional (máx. 1.5 MB).</div>
@@ -230,58 +389,128 @@ export default function BarraWorkspace({ negocio, userName }) {
         {!turno && <p style={{ color: C.sub, fontSize: 13 }}>No hay turno abierto.</p>}
         {turno && comandas.length === 0 && <p style={{ color: C.sub, fontSize: 13 }}>Sin comandas en este turno.</p>}
         {turno && comandas.length > 0 && comandasVisibles.length === 0 && <p style={{ color: C.sub, fontSize: 13 }}>No hay comandas de este mesero.</p>}
-        {comandasVisibles.map(comanda => (
-          <div key={comanda.id} className="waiter-order-row">
-            {(() => {
-              const stockCheck = getStockCheck(comanda);
-              const hasInsufficientStock = stockCheck.length > 0 && stockCheck.some(item => !item.available);
-              return (
-                <>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 700 }}>Comanda #{comanda.consecutivo || "—"}</div>
-              <div style={{ color: C.text2, fontSize: 12 }}>Mesero: {comanda.mesero_nombre || comanda.mesero_id}</div>
-              <div style={{ color: C.sub, fontSize: 11 }}>{new Date(comanda.creado_en).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</div>
+        <div className="barra-order-tabs" role="tablist" aria-label="Filtrar comandas por estado">
+          {STATUS_GROUPS.map(group => {
+            const count = getStatusOrders(group.id).length;
+            return (
+              <button
+                key={group.id}
+                id={`barra-tab-${group.id}`}
+                type="button"
+                role="tab"
+                aria-selected={activeStatus === group.id}
+                aria-controls="barra-orders-panel"
+                className={`barra-order-tab barra-order-tab--${group.id}${activeStatus === group.id ? " is-active" : ""}`}
+                onClick={() => setActiveStatus(group.id)}
+              >
+                <span>{group.title}</span><b>{count}</b>
+              </button>
+            );
+          })}
+        </div>
+        <section
+          id="barra-orders-panel"
+          role="tabpanel"
+          aria-labelledby={`barra-tab-${activeStatus}`}
+          className={`barra-order-group barra-order-group--${activeStatus}`}
+        >
+          <header className="barra-order-group__header">
+            <div>
+              <h3>{STATUS_GROUPS.find(group => group.id === activeStatus)?.title}</h3>
+              <p>{STATUS_GROUPS.find(group => group.id === activeStatus)?.description}</p>
             </div>
-            <Badge color={STATUS_COLOR[comanda.estado] || C.sub} small>{STATUS_LABEL[comanda.estado] || comanda.estado}</Badge>
-            <strong style={{ color: C.green, fontSize: 13 }}>{COP(comanda.total)}</strong>
-            <button style={{ ...s.btn("ghost"), padding: "6px 10px" }} type="button" disabled={busy} onClick={() => toggleDetails(comanda)}>
-              {expandedId === comanda.id ? "Ocultar productos" : "Ver productos"}
-            </button>
-            {expandedId === comanda.id && hasInsufficientStock && <Badge color={C.red} small>Stock insuficiente</Badge>}
-            {comanda.estado === "enviada" && <button style={{ ...s.btn("success"), padding: "6px 10px" }} type="button" disabled={busy || hasInsufficientStock} onClick={() => dispatch(comanda)}>Autorizar y entregar</button>}
-            {expandedId === comanda.id && (
-              <div style={{ flexBasis: "100%", marginTop: 8, padding: "8px 10px", borderRadius: 8, background: C.surface, border: `1px solid ${C.border}` }}>
-                <div style={{ color: C.sub, fontSize: 11, marginBottom: 6 }}>Comparación contra el inventario actual</div>
-                {stockCheck.map(item => (
-                  <div key={item.id} style={{ padding: "8px 0", borderBottom: `1px solid ${C.border}50`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                        <span style={{ fontWeight: 600, fontSize: 13 }}>{item.nombre}</span>
-                        <span style={{ 
-                          display: "inline-flex", alignItems: "center", gap: 4, 
-                          background: item.available ? "rgba(52, 211, 153, 0.15)" : "rgba(248, 113, 113, 0.15)", 
-                          padding: "2px 6px", borderRadius: 4, fontSize: 11, fontWeight: 700,
-                          color: item.available ? C.green : C.red
-                        }}>
-                          Pide {item.requested} <span style={{ color: C.sub, opacity: 0.7, fontWeight: 400 }}>/</span> Stock {item.stock}
-                        </span>
-                      </div>
-                      <div style={{ color: C.sub, fontSize: 11, marginTop: 4 }}>
-                        {COP(item.precio_unitario)} c/u
-                      </div>
-                    </div>
-                    <strong style={{ color: C.green, fontSize: 13, flexShrink: 0 }}>{COP(item.requested * Number(item.precio_unitario))}</strong>
+            <span>{getStatusOrders(activeStatus).length}</span>
+          </header>
+          {!getStatusOrders(activeStatus).length && (
+            <p className="barra-order-empty">No hay comandas en esta categoría.</p>
+          )}
+          {getStatusOrders(activeStatus).map(comanda => {
+            const stockCheck = getStockCheck(comanda);
+            const hasInsufficientStock = stockCheck.length > 0 && stockCheck.some(item => !item.available);
+            return (
+              <div key={comanda.id} className="barra-order">
+                <div className="barra-order__summary">
+                  <div className="barra-order__identity">
+                    <strong>Comanda #{comanda.consecutivo || "—"}</strong>
+                    <span>Mesero: {comanda.mesero_nombre || comanda.mesero_id}</span>
+                    <time>{formatLocalTime(comanda.creado_en)}</time>
                   </div>
-                ))}
-                {hasInsufficientStock && <div style={{ color: C.red, fontSize: 11, marginTop: 7 }}>No se puede autorizar hasta registrar entrada o ajustar el pedido.</div>}
+                  <div className="barra-order__status">
+                    <Badge color={STATUS_COLOR[comanda.estado] || C.sub} small>
+                      {STATUS_LABEL[comanda.estado] || comanda.estado}
+                    </Badge>
+                  </div>
+                  <strong className="barra-order__total">{COP(comanda.total)}</strong>
+                  <div className="barra-order__actions">
+                    <button
+                      className="barra-order__details-button"
+                      style={{ ...s.btn("ghost"), padding: "6px 10px" }}
+                      type="button"
+                      disabled={busy}
+                      onClick={() => toggleDetails(comanda)}
+                    >
+                      {expandedIds.has(comanda.id) ? "Ocultar productos" : "Ver productos"}
+                    </button>
+                    <div className="barra-order__authorize-slot">
+                      {comanda.estado === "enviada" ? (
+                        <button
+                          style={{ ...s.btn("success"), padding: "6px 10px" }}
+                          type="button"
+                          disabled={busy || hasInsufficientStock}
+                          onClick={() => dispatch(comanda)}
+                        >
+                          Autorizar y entregar
+                        </button>
+                      ) : <span aria-hidden="true" />}
+                    </div>
+                  </div>
+                </div>
+                {expandedIds.has(comanda.id) && (
+                  <div className="barra-order-details">
+                    <div className="barra-order-details__title">Productos · comparación con inventario</div>
+                    <div className="barra-order-details__header" aria-hidden="true">
+                      <span>Producto</span>
+                      <span>Solicitado</span>
+                      <span>Stock actual</span>
+                      <span>Subtotal</span>
+                    </div>
+                    {stockCheck.map(item => (
+                      <div key={item.id} className={`barra-order-details__row${item.available ? "" : " is-insufficient"}`}>
+                        <span className="barra-order-details__product">
+                          <span>{item.nombre}</span>
+                          {promotionTypesOf(item.promociones_aplicadas).map(type => (
+                            <span key={type} className="barra-order-details__promotion">
+                              {PROMOTION_LABEL[type] || "Promoción"}
+                            </span>
+                          ))}
+                          {!promotionTypesOf(item.promociones_aplicadas).length && Number(item.descuento) > 0 && (
+                            <span className="barra-order-details__promotion" title="El tipo de promoción no quedó registrado en este pedido">
+                              Promoción
+                            </span>
+                          )}
+                        </span>
+                        <span className="barra-order-details__quantity">{item.requested}</span>
+                        <span className={`barra-order-details__stock${item.available ? "" : " is-insufficient"}`}>
+                          {item.stock}
+                        </span>
+                        <strong className="barra-order-details__subtotal">
+                          {COP(item.requested * Number(item.precio_unitario))}
+                        </strong>
+                      </div>
+                    ))}
+                    {hasInsufficientStock && (
+                      <div style={{ color: C.red, fontSize: 11, marginTop: 7 }}>
+                        No se puede autorizar hasta registrar entrada o ajustar el pedido.
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-            )}
-                </>
-              );
-            })()}
-          </div>
-        ))}
+            );
+          })}
+        </section>
       </div>
+      </>}
     </div>
   );
 }

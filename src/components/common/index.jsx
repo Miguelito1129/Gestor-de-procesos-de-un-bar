@@ -5,7 +5,7 @@ export const Badge = ({ color=C.muted, children, small }) =>
 
 export const Metric = ({ label, value, color=C.text, sub, icon, compact }) =>
   <div style={{...s.metric,...(compact?{padding:'0.4rem 0.6rem'}:{})}}>
-    <div style={{...s.label,...(compact?{fontSize:9,marginBottom:2}:{})}}>{icon&&<span style={{marginRight:4}}>{icon}</span>}{label}</div>
+    <div style={{...s.label,...(compact?{fontSize:9,marginBottom:2}:{})}}>{icon&&<span className="ui-metric__icon" style={{marginRight:4}}>{icon}</span>}{label}</div>
     <div style={{...s.big,color,...(compact?{fontSize:14}:{})}}>{value}</div>
     {sub&&<div style={{fontSize:11,color:C.sub,marginTop:2}}>{sub}</div>}
   </div>;

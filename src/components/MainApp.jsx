@@ -3,7 +3,7 @@ import { C, s } from "../constants/theme.js";
 import { can, canSeeNeg, normalizeRole, ROLE_LABELS } from "../constants/roles.js";
 import { useAuth } from "../hooks/useAuth.jsx";
 import {
-  LOCAL_API_URL, localDeleteProductos, localInsert, localUpsert,
+  LOCAL_API_URL, localDeleteNegocio, localDeleteProductos, localInsert, localUpsert,
   loadNegociosFromLocal,
 } from "../lib/localApi.js";
 import { Badge } from "./common/index.jsx";
@@ -17,6 +17,8 @@ import ChatbotIA        from "./ChatbotIA/ChatbotIA.jsx";
 import UserMgmt         from "./Users/UserMgmt.jsx";
 import Promociones      from "./Promociones/Promociones.jsx";
 import NuevoNegocioModal from "./NuevoNegocioModal.jsx";
+import EliminarNegocioModal from "./EliminarNegocioModal.jsx";
+import AdminAccessLinks from "./AdminAccessLinks.jsx";
 import RoleWorkspace    from "./RoleWorkspace/RoleWorkspace.jsx";
 
 // ── Storage key ───────────────────────────────────────────────────────────────
@@ -38,12 +40,13 @@ const INIT_NEGOCIOS = []; /*
 */ 
 
 const VIEWS_ADMIN    = [{id:'dashboard',label:'Dashboard'},{id:'planilla',label:'Planillas'},{id:'inventario',label:'Inventario'},{id:'promociones',label:'🏷️ Promociones'},{id:'gastos',label:'Gastos'},{id:'cierres',label:'📅 Cierres'},{id:'reportes',label:'📊 Reportes'},{id:'chat',label:'✦ IA'},{id:'usuarios',label:'👤 Usuarios'}];
+const VIEWS_GERENTE  = VIEWS_ADMIN.filter(view=>view.id!=='usuarios');
 const VIEWS_ADMIN_TURNO = [{id:'planilla',label:'Turno'}];
 const VIEWS_DUENO    = [{id:'dashboard',label:'Dashboard'},{id:'cierres',label:'📅 Cierres'},{id:'reportes',label:'📊 Reportes'},{id:'inventario',label:'Inventario'},{id:'planilla',label:'Historial'}];
 const VIEWS_BARRA    = [{id:'operacion',label:'Cola de barra'}];
 const VIEWS_MESERO   = [{id:'operacion',label:'Mis comandas'}];
 
-const ROLE_BADGE = {admin:C.amber, administrador:C.amber, auxiliar:C.indigo, jefe:C.green, dueño:C.green, barra:C.amber, mesero:C.indigo};
+const ROLE_BADGE = {admin:C.amber, administrador:C.amber, gerente:C.amber, auxiliar:C.indigo, jefe:C.green, dueño:C.green, barra:C.amber, mesero:C.indigo};
 
 // Tabs inferiores para móvil (máx 5 visibles + "Más")
 const BOTTOM_ADMIN   = [{id:'dashboard',label:'Inicio',icon:'🏠'},{id:'planilla',label:'Turno',icon:'📋'},{id:'cierres',label:'Cierres',icon:'📅'},{id:'mas',label:'Más',icon:'⋯'}];
@@ -51,22 +54,44 @@ const BOTTOM_AUXILIAR= [{id:'planilla',label:'Turno',icon:'📋'}];
 const BOTTOM_JEFE    = [{id:'dashboard',label:'Inicio',icon:'🏠'},{id:'planilla',label:'Turno',icon:'📋'},{id:'cierres',label:'Cierres',icon:'📅'},{id:'reportes',label:'Reportes',icon:'📊'},{id:'inventario',label:'Stock',icon:'📦'}];
 const BOTTOM_BARRA   = [{id:'operacion',label:'Cola',icon:'🍸'}];
 const BOTTOM_MESERO  = [{id:'operacion',label:'Comandas',icon:'🧾'}];
+const VIEW_ICONS = {
+  dashboard: '⌂',
+  planilla: '▤',
+  inventario: '▦',
+  promociones: '◇',
+  gastos: '$',
+  cierres: '◷',
+  reportes: '▥',
+  chat: '✦',
+  usuarios: '♙',
+  operacion: '🍸',
+};
+const SIDEBAR_STORAGE_KEY = 'gestionbar-sidebar-collapsed';
 
 // Menú "Más" para admin en móvil
 const MAS_ADMIN = [{id:'inventario',label:'Inventario',icon:'📦'},{id:'promociones',label:'Promociones',icon:'🏷️'},{id:'gastos',label:'Gastos',icon:'💸'},{id:'reportes',label:'Reportes',icon:'📊'},{id:'chat',label:'Asistente IA',icon:'✦'},{id:'usuarios',label:'Usuarios',icon:'👤'}];
+const MAS_GERENTE = MAS_ADMIN.filter(item=>item.id!=='usuarios');
 
 export default function MainApp() {
   const { user, logout } = useAuth();
   const [isMobile, setIsMobile] = useState(()=>window.innerWidth<=768||!!window.Capacitor);
   const [showMas, setShowMas] = useState(false);
   const role = normalizeRole(user?.role);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    const saved = window.localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    return saved === null ? window.innerWidth <= 1100 : saved === 'true';
+  });
   useEffect(()=>{
     const h=()=>setIsMobile(window.innerWidth<=768||!!window.Capacitor);
     window.addEventListener('resize',h); return()=>window.removeEventListener('resize',h);
   },[]);
+  useEffect(()=>{
+    window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(sidebarCollapsed));
+  },[sidebarCollapsed]);
   const [negocios, setNegocios] = useState(INIT_NEGOCIOS);
   const [dbLoading, setDbLoading] = useState(true);
   const [dbSource,  setDbSource]  = useState('local');
+  const [businessToDelete, setBusinessToDelete] = useState(null);
 
   useEffect(()=>{
     (async()=>{
@@ -89,6 +114,7 @@ export default function MainApp() {
   const [view, setView]           = useState(role==='barra'||role==='mesero'?'operacion':role==='administrador'?'dashboard':'dashboard');
   const [showNuevoNeg, setShowNuevoNeg] = useState(false);
   const [showUsers,    setShowUsers]    = useState(false);
+  const [showAccessLinks, setShowAccessLinks] = useState(false);
 
   useEffect(()=>{
     if(negocios.length&&!negocios.find(n=>n.id===negocioId)){
@@ -147,12 +173,26 @@ export default function MainApp() {
     if (LOCAL_API_URL) await localInsert('negocios', { id:n.id, name:n.name, emoji:n.emoji, color:n.color, tipo:n.tipo });
   }, [negocios]);
 
+  const confirmarEliminacionNegocio = async () => {
+    if (!businessToDelete) return;
+    await localDeleteNegocio(businessToDelete.id);
+    const remainingBusinesses = negocios.filter(item => item.id !== businessToDelete.id);
+    saveNegocios(remainingBusinesses);
+    if (negocioId === businessToDelete.id) {
+      setNegocioId(remainingBusinesses[0]?.id || null);
+      setView('dashboard');
+    }
+    setBusinessToDelete(null);
+  };
+
   const visibleNegs   = negocios.filter(n=>canSeeNeg(user,n.id));
   const negocio       = negocios.find(n=>n.id===negocioId)||visibleNegs[0]||negocios[0];
   const updateNegocio = useCallback(updated=>saveAndSync(updated),[saveAndSync]);
-  const VIEWS         = role==='administrador' ? VIEWS_ADMIN : role==='dueño' ? VIEWS_DUENO : role==='barra' ? VIEWS_BARRA : role==='mesero' ? VIEWS_MESERO : VIEWS_ADMIN_TURNO;
-  const BOTTOM_TABS   = role==='administrador' ? BOTTOM_ADMIN : role==='dueño' ? BOTTOM_JEFE : role==='barra' ? BOTTOM_BARRA : role==='mesero' ? BOTTOM_MESERO : BOTTOM_AUXILIAR;
   const isAdmin       = role==='administrador';
+  const isManager     = role==='gerente';
+  const VIEWS         = isAdmin ? VIEWS_ADMIN : isManager ? VIEWS_GERENTE : role==='dueño' ? VIEWS_DUENO : role==='barra' ? VIEWS_BARRA : role==='mesero' ? VIEWS_MESERO : VIEWS_ADMIN_TURNO;
+  const BOTTOM_TABS   = isAdmin || isManager ? BOTTOM_ADMIN : role==='dueño' ? BOTTOM_JEFE : role==='barra' ? BOTTOM_BARRA : role==='mesero' ? BOTTOM_MESERO : BOTTOM_AUXILIAR;
+  const MORE_MENU     = isAdmin ? MAS_ADMIN : MAS_GERENTE;
   const isJefe        = role==='dueño';
 
   const syncDB = async()=>{
@@ -183,6 +223,7 @@ export default function MainApp() {
         {isAdmin && <button style={s.btn('primary')} onClick={()=>setShowNuevoNeg(true)}>Crear negocio</button>}
         <button style={{...s.btn('ghost'),marginLeft:8}} onClick={logout}>Salir</button>
         {showNuevoNeg&&<NuevoNegocioModal onClose={()=>setShowNuevoNeg(false)} onCrear={crearNegocio}/>}
+        {businessToDelete&&<EliminarNegocioModal negocio={businessToDelete} onClose={()=>setBusinessToDelete(null)} onDelete={confirmarEliminacionNegocio}/>}
       </div>
     </div>
   );
@@ -194,11 +235,11 @@ export default function MainApp() {
       {view==='operacion'  && (role==='barra'||role==='mesero') && <RoleWorkspace role={role} negocio={negocio} userName={user?.name} userId={user?.id}/>}
       {view==='planilla'   && <Planilla key={negocio?.id} negocio={negocio} onUpdateNegocio={updateNegocio}/>}
       {view==='inventario' && <Inventario negocio={negocio} onUpdateNegocio={updated=>saveAndSync(updated,true)} readOnly={isJefe}/>}
-      {view==='promociones' && isAdmin && <Promociones negocio={negocio}/>}
-      {view==='gastos'     && isAdmin && <GastosView negocio={negocio}/>}
+      {view==='promociones' && (isAdmin||isManager) && <Promociones negocio={negocio}/>}
+      {view==='gastos'     && (isAdmin||isManager) && <GastosView negocio={negocio}/>}
       {view==='cierres'    && <CierreSemanal negocios={visibleNegs} negocioId={negocioId}/>}
       {view==='reportes'   && <Reports negocios={visibleNegs}/>}
-      {view==='chat'       && isAdmin && <ChatbotIA negocio={negocio}/>}
+      {view==='chat'       && (isAdmin||isManager) && <ChatbotIA negocio={negocio}/>}
       {view==='usuarios'   && isAdmin && <div style={{color:C.sub,padding:'2rem',textAlign:'center',fontSize:14}}>Usa el botón 👤 en la barra de navegación para gestionar usuarios.</div>}
     </>
   );
@@ -232,7 +273,7 @@ export default function MainApp() {
 
         {/* Contenido con padding inferior para la tab bar */}
         <main className="app-mobile__content" style={{flex:1,padding:'clamp(0.65rem, 3vw, 1rem)',paddingBottom:'calc(74px + env(safe-area-inset-bottom))',overflowY:'auto'}}>
-          {mainContent}
+          <div key={view} className="app-page-enter">{mainContent}</div>
         </main>
 
         {/* Bottom Tab Bar */}
@@ -265,7 +306,7 @@ export default function MainApp() {
               borderTop:`1px solid ${C.border}`,borderRadius:'16px 16px 0 0',padding:'8px 0 16px'}}
               onClick={e=>e.stopPropagation()}>
                 <div style={{width:36,height:4,borderRadius:2,background:C.border,margin:'4px auto 12px'}}/>
-              {MAS_ADMIN.map(item=>(
+              {MORE_MENU.map(item=>(
                 <button key={item.id} onClick={()=>{setView(item.id);setShowMas(false);}}
                   style={{width:'100%',display:'flex',alignItems:'center',gap:14,padding:'14px 20px',
                     border:'none',background:view===item.id?accentColor+'15':'none',cursor:'pointer',
@@ -273,10 +314,27 @@ export default function MainApp() {
                   <span style={{fontSize:22}}>{item.icon}</span>{item.label}
                 </button>
               ))}
+              {isAdmin&&(
+                <div className="app-mobile-business-admin">
+                  <div className="app-mobile-business-admin__heading">Administrar negocios</div>
+                  {visibleNegs.map(business=>(
+                    <div className="app-mobile-business-admin__row" key={business.id}>
+                      <span>{business.emoji} {business.name}</span>
+                      <button type="button" onClick={()=>setBusinessToDelete(business)} aria-label={`Eliminar ${business.name}`}>
+                        Eliminar
+                      </button>
+                    </div>
+                  ))}
+                  <button className="app-mobile-business-admin__create" type="button" onClick={()=>{setShowNuevoNeg(true);setShowMas(false);}}>
+                    + Crear negocio
+                  </button>
+                </div>
+              )}
               <div style={{height:1,background:C.border,margin:'8px 0'}}/>
-              <div style={{padding:'8px 20px',display:'flex',alignItems:'center',gap:10}}>
+              <div style={{padding:'8px 20px',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
                 <Badge color={ROLE_BADGE[role]||C.muted} small>{ROLE_LABELS[role]||role}</Badge>
                 <span style={{fontSize:13,color:C.sub,flex:1}}>{user?.name}</span>
+                {isAdmin&&<button style={{...s.btn(),padding:'6px 12px',fontSize:12}} onClick={()=>{setShowAccessLinks(true);setShowMas(false);}}>🔗 Compartir acceso</button>}
                 {isAdmin&&<button style={{...s.btn(),padding:'6px 12px',fontSize:12}} onClick={()=>{setShowUsers(true);setShowMas(false);}}>👤 Usuarios</button>}
                 <button style={{...s.btn('danger'),padding:'6px 12px',fontSize:12}} onClick={logout}>Salir</button>
               </div>
@@ -285,42 +343,142 @@ export default function MainApp() {
         )}
 
         {showNuevoNeg&&<NuevoNegocioModal onClose={()=>setShowNuevoNeg(false)} onCrear={crearNegocio}/>}
+        {businessToDelete&&<EliminarNegocioModal negocio={businessToDelete} onClose={()=>setBusinessToDelete(null)} onDelete={confirmarEliminacionNegocio}/>}
+        {showAccessLinks&&<AdminAccessLinks onClose={()=>setShowAccessLinks(false)}/>}
         {showUsers&&<UserMgmt negocios={negocios} onClose={()=>setShowUsers(false)}/>}
       </div>
     );
   }
 
-  // ── LAYOUT ESCRITORIO (sin cambios) ──────────────────────────────────────────
+  // ── LAYOUT ESCRITORIO ────────────────────────────────────────────────────────
   return(
-    <div style={{minHeight:'100vh',background:C.bg,color:C.text,fontFamily:"'Segoe UI',system-ui,-apple-system,sans-serif"}}>
-      <nav style={s.nav}>
-        <div style={{fontWeight:900,fontSize:15,color:C.amber,marginRight:'0.5rem',letterSpacing:'-0.5px'}}>▸ GestiónBar</div>
-        <div style={{width:1,height:22,background:C.border,margin:'0 6px'}}/>
-        <div style={{display:'flex',background:C.bg,borderRadius:9,padding:3,gap:2,marginRight:'0.75rem',border:`1px solid ${C.border}`,flexWrap:'wrap'}}>
-          {visibleNegs.map(n=>(
-            <button key={n.id} onClick={()=>setNegocioId(n.id)} style={{padding:'4px 12px',borderRadius:7,border:'none',cursor:'pointer',background:negocioId===n.id?n.color:'transparent',color:negocioId===n.id?'#0b0b14':C.sub,fontWeight:700,fontSize:12}}>
-              {n.emoji} {n.name}
-            </button>
-          ))}
-          {isAdmin&&<button onClick={()=>setShowNuevoNeg(true)} title="Nuevo negocio" style={{padding:'4px 10px',borderRadius:7,border:'none',cursor:'pointer',background:'transparent',color:C.sub,fontWeight:700,fontSize:14}}>+</button>}
-        </div>
-        {VIEWS.map(v=>{const a=view===v.id;return<button key={v.id} style={{padding:'5px 12px',borderRadius:7,border:'none',cursor:'pointer',background:a?negocio.color:'transparent',color:a?'#0b0b14':C.sub,fontWeight:a?700:400,fontSize:12}} onClick={()=>setView(v.id)}>{v.label}</button>;})}
-        <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:8}}>
-          <Badge color={ROLE_BADGE[role]||C.muted} small>{ROLE_LABELS[role]||role}</Badge>
-          <span style={{fontSize:12,color:C.sub,maxWidth:120,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{user?.name}</span>
-          {isAdmin&&<button style={{...s.btn(),padding:'3px 10px',fontSize:11}} onClick={()=>setShowUsers(true)}>👤</button>}
-          <button style={{...s.btn(),padding:'3px 8px',fontSize:10,color:C.green,border:`1px solid ${C.green}40`}}
-            title="Datos en servidor local"
-            onClick={syncDB}>
-            {'Servidor local'}
+    <div className={`app-desktop${sidebarCollapsed?' app-desktop--collapsed':''}`} style={{minHeight:'100vh',background:C.bg,color:C.text,fontFamily:"'Segoe UI',system-ui,-apple-system,sans-serif"}}>
+      <aside className="app-sidebar">
+        <div className="app-sidebar__brand">
+          <span className="app-sidebar__brand-mark">▸</span>
+          {!sidebarCollapsed&&<span className="app-sidebar__brand-name">GestiónBar</span>}
+          <button
+            className="app-sidebar__collapse"
+            type="button"
+            onClick={()=>setSidebarCollapsed(collapsed=>!collapsed)}
+            aria-label={sidebarCollapsed?'Expandir barra lateral':'Contraer barra lateral'}
+            aria-expanded={!sidebarCollapsed}
+            title={sidebarCollapsed?'Expandir barra lateral':'Contraer barra lateral'}
+          >
+            {sidebarCollapsed?'»':'«'}
           </button>
-          <button style={{...s.btn('danger'),padding:'3px 10px',fontSize:11}} onClick={logout}>Salir</button>
         </div>
-      </nav>
-      <main style={s.main}>
-        {mainContent}
-      </main>
+        <div className="app-sidebar__section-label">{!sidebarCollapsed&&'Negocios'}</div>
+        <div className="app-sidebar__businesses">
+          {visibleNegs.map(n=>(
+            <div className="app-sidebar__business-row" key={n.id}>
+              <button
+                className={`app-sidebar__business${negocioId===n.id?' is-active':''}`}
+                onClick={()=>setNegocioId(n.id)}
+                style={negocioId===n.id?{'--business-color':n.color}:undefined}
+                title={n.name}
+                aria-current={negocioId===n.id?'true':undefined}
+              >
+                <span>{n.emoji}</span>
+                {!sidebarCollapsed&&<span className="app-sidebar__business-name">{n.name}</span>}
+              </button>
+              {isAdmin&&(
+                <button
+                  className="app-sidebar__business-delete"
+                  type="button"
+                  onClick={()=>setBusinessToDelete(n)}
+                  title={`Eliminar ${n.name}`}
+                  aria-label={`Eliminar ${n.name}`}
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          ))}
+          {isAdmin&&(
+            <button
+              className="app-sidebar__business app-sidebar__add"
+              onClick={()=>setShowNuevoNeg(true)}
+              title="Nuevo negocio"
+              aria-label="Crear negocio"
+            >
+              <span>+</span>{!sidebarCollapsed&&<span className="app-sidebar__business-name">Nuevo negocio</span>}
+            </button>
+          )}
+        </div>
+        <div className="app-sidebar__section-label">{!sidebarCollapsed&&'Navegación'}</div>
+        <nav className="app-sidebar__navigation" aria-label="Navegación principal">
+          {VIEWS.map(v=>{
+            const active=view===v.id;
+            const icon=v.id==='operacion'&&role==='mesero'?'🧾':VIEW_ICONS[v.id]||'•';
+            return(
+              <button
+                key={v.id}
+                className={`app-sidebar__link${active?' is-active':''}`}
+                style={active?{'--business-color':negocio?.color||C.amber}:undefined}
+                onClick={()=>setView(v.id)}
+                title={v.label}
+                aria-current={active?'page':undefined}
+              >
+                <span className="app-sidebar__icon" aria-hidden="true">{icon}</span>
+                {!sidebarCollapsed&&<span className="app-sidebar__link-label">{v.label}</span>}
+              </button>
+            );
+          })}
+        </nav>
+        <div className="app-sidebar__footer">
+          {!sidebarCollapsed&&(
+            <div className="app-sidebar__user">
+              <Badge color={ROLE_BADGE[role]||C.muted} small>{ROLE_LABELS[role]||role}</Badge>
+              <span title={user?.name}>{user?.name}</span>
+            </div>
+          )}
+          {sidebarCollapsed&&<div className="app-sidebar__role" title={ROLE_LABELS[role]||role}><Badge color={ROLE_BADGE[role]||C.muted} small>{(ROLE_LABELS[role]||role).slice(0,1)}</Badge></div>}
+          {isAdmin&&(
+            <button className="app-sidebar__utility" onClick={()=>setShowUsers(true)} title="Usuarios">
+              <span aria-hidden="true">👤</span>{!sidebarCollapsed&&<span>Usuarios</span>}
+            </button>
+          )}
+          {isAdmin&&(
+            <button className="app-sidebar__utility" onClick={()=>setShowAccessLinks(true)} title="Compartir acceso con meseros y barra">
+              <span aria-hidden="true">🔗</span>{!sidebarCollapsed&&<span>Compartir acceso</span>}
+            </button>
+          )}
+          <button className="app-sidebar__utility" onClick={syncDB} title="Datos en servidor local">
+            <span aria-hidden="true">↻</span>{!sidebarCollapsed&&<span>Servidor local</span>}
+          </button>
+          <button className="app-sidebar__utility app-sidebar__logout" onClick={logout} title="Salir">
+            <span aria-hidden="true">↪</span>{!sidebarCollapsed&&<span>Salir</span>}
+          </button>
+        </div>
+      </aside>
+      <div className="app-desktop__content">
+        <header className="app-topbar">
+          <div className="app-topbar__workspace">
+            <span className="app-topbar__business-mark" aria-hidden="true">{negocio.emoji||'🍸'}</span>
+            <div className="app-topbar__titles">
+              <span className="app-topbar__eyebrow">ESPACIO DE TRABAJO</span>
+              <div>
+                <strong>{negocio.name}</strong>
+                <span className="app-topbar__separator">/</span>
+                <span>{VIEWS.find(item=>item.id===view)?.label||'Inicio'}</span>
+              </div>
+            </div>
+          </div>
+          <div className="app-topbar__meta">
+            <span className="app-topbar__local"><i aria-hidden="true"/> Sistema local</span>
+            <Badge color={ROLE_BADGE[role]||C.muted} small>{ROLE_LABELS[role]||role}</Badge>
+          </div>
+        </header>
+        <main className="app-desktop__main">
+          <div key={view} className="app-page-enter">
+            {mainContent}
+          </div>
+        </main>
+      </div>
       {showNuevoNeg&&<NuevoNegocioModal onClose={()=>setShowNuevoNeg(false)} onCrear={crearNegocio}/>}
+      {businessToDelete&&<EliminarNegocioModal negocio={businessToDelete} onClose={()=>setBusinessToDelete(null)} onDelete={confirmarEliminacionNegocio}/>}
+      {showAccessLinks&&<AdminAccessLinks onClose={()=>setShowAccessLinks(false)}/>}
       {showUsers&&<UserMgmt negocios={negocios} onClose={()=>setShowUsers(false)}/>}
     </div>
   );

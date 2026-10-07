@@ -7,9 +7,45 @@ import { analizarGasto, hasAI } from "../../lib/aiVision.js";
 const CATS = ['Insumos','Nómina','Mantenimiento','Servicios','Proveedores','Arriendo','Comisión','CxC','Otros'];
 const CAT_COLORS = { Insumos:C.indigo, Nómina:C.green, Mantenimiento:C.amber, Servicios:C.purple, Proveedores:C.cyan, Arriendo:C.red, Comisión:'#ec4899', CxC:C.red, Otros:C.sub };
 
-// La foto queda disponible localmente para previsualización; el registro se guarda en SQLite.
-async function uploadFoto(file, carpeta) {
-  return file ? URL.createObjectURL(file) : null;
+function readAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("No fue posible leer la imagen."));
+    reader.readAsDataURL(file);
+  });
+}
+
+export async function preparePhoto(file) {
+  if (file.size > 20_000_000) throw new Error("La imagen supera el límite de 20 MB.");
+  const source = await readAsDataUrl(file);
+  const image = new Image();
+  image.src = source;
+  await new Promise((resolve, reject) => {
+    image.onload = resolve;
+    image.onerror = () => reject(new Error("El archivo seleccionado no es una imagen válida."));
+  });
+
+  const scale = Math.min(1, 1600 / Math.max(image.naturalWidth, image.naturalHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("No fue posible preparar la imagen.");
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+  for (const quality of [0.82, 0.7, 0.58, 0.46]) {
+    const dataUrl = canvas.toDataURL("image/jpeg", quality);
+    if (dataUrl.length <= 1_400_000) return dataUrl;
+  }
+  throw new Error("La imagen es demasiado grande. Selecciona una foto más pequeña.");
+}
+
+function localDate() {
+  const today = new Date();
+  return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
 }
 
 // Detectar categoría del gasto
@@ -33,17 +69,28 @@ export default function UploadGasto({ negocio, onRegistered }) {
   const [desc, setDesc] = useState('');
   const [monto, setMonto] = useState('');
   const [cat, setCat] = useState('Insumos');
+  const [date, setDate] = useState(localDate);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
 
   const handleFile = async (f) => {
     if (!f) return;
-    setFile(f);
+    setFile(null);
+    setPreview(null);
     setResult(null);
     setSuccess(false);
     setError('');
-    setPreview(URL.createObjectURL(f));
+    try {
+      const photo = await preparePhoto(f);
+      setPreview(photo);
+      setFile(photo);
+    } catch (photoError) {
+      setFile(null);
+      setPreview(null);
+      setError(photoError.message);
+      return;
+    }
 
     if (hasAI()) {
       setAnalyzing(true);
@@ -64,30 +111,31 @@ export default function UploadGasto({ negocio, onRegistered }) {
 
   const handleDrop = (e) => {
     e.preventDefault();
-    const f = e.dataTransfer.files?.[0];
-    if (f && f.type.startsWith('image/')) handleFile(f);
+    const droppedFile = e.dataTransfer.files?.[0];
+    if (droppedFile?.type.startsWith('image/')) handleFile(droppedFile);
+    else setError("Selecciona un archivo de imagen.");
   };
 
   const registrar = async () => {
-    if (!desc || !monto || parseInt(monto) <= 0) return;
+    const amount = Number(monto);
+    if (!desc.trim() || !Number.isSafeInteger(amount) || amount <= 0 || uploading) {
+      setError("Ingresa una descripción y un monto válido mayor que cero.");
+      return;
+    }
     setUploading(true);
     setError('');
     try {
-      let fotoUrl = null;
-      if (file) {
-        try { fotoUrl = await uploadFoto(file, `gastos/${negocio.id}`); } catch (_) {}
-      }
-
-      await localInsert('gastos', [{
+      const saved = await localInsert('gastos', [{
         id: uid(),
         negocio_id: negocio.id,
-        fecha: new Date().toISOString().slice(0, 10),
-        descripcion: desc,
-        monto: parseInt(monto),
+        fecha: date,
+        desc: desc.trim(),
+        monto: amount,
         cat,
-        foto_url: fotoUrl,
+        foto_url: file,
         procesado: false,
       }]);
+      if (!saved) throw new Error("No fue posible guardar el gasto. Revisa la conexión con el servidor.");
 
       setSuccess(true);
       setFile(null);
@@ -96,11 +144,14 @@ export default function UploadGasto({ negocio, onRegistered }) {
       setDesc('');
       setMonto('');
       setCat('Insumos');
+      setDate(localDate());
+      if (fileRef.current) fileRef.current.value = "";
       if (onRegistered) onRegistered();
     } catch (e) {
       setError('Error al registrar: ' + e.message);
+    } finally {
+      setUploading(false);
     }
-    setUploading(false);
   };
 
   const reset = () => {
@@ -110,12 +161,24 @@ export default function UploadGasto({ negocio, onRegistered }) {
     setDesc('');
     setMonto('');
     setCat('Insumos');
+    setDate(localDate());
+    if (fileRef.current) fileRef.current.value = "";
     setError('');
     setSuccess(false);
   };
 
   return (
     <div>
+      {error && !file && (
+        <div style={{ padding: '8px 10px', marginBottom: 8, border: `1px solid ${C.red}40`, borderRadius: 9, background: `${C.red}10`, color: C.red, fontSize: 11 }} role="alert">
+          {error}
+        </div>
+      )}
+      {success && !file && (
+        <div style={{ padding: '8px 10px', marginBottom: 8, border: `1px solid ${C.green}40`, borderRadius: 9, background: `${C.green}10`, color: C.green, fontSize: 11 }} role="status">
+          ✓ Gasto y comprobante guardados.
+        </div>
+      )}
       {!file ? (
         <div
           onDrop={handleDrop}
@@ -141,7 +204,7 @@ export default function UploadGasto({ negocio, onRegistered }) {
             Arrastra una foto o haz clic para seleccionar
           </div>
           <div style={{ fontSize: 10, color: C.muted, marginTop: 6 }}>
-            {hasAI() ? '🧠 La IA extraerá descripción y monto automáticamente' : '📝 Ingresa los datos manualmente'}
+            {hasAI() ? '🧠 La IA puede sugerir descripción, monto y categoría' : '📝 Adjunta el comprobante y completa los datos'}
           </div>
           <input
             ref={fileRef}
@@ -191,7 +254,7 @@ export default function UploadGasto({ negocio, onRegistered }) {
 
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
               <input
-                style={{ ...s.inp, flex: 2, minWidth: 120, fontSize: 12, padding: '4px 8px', height: 30 }}
+                style={{ ...s.inp, flex: 2, minWidth: 120 }}
                 placeholder="Descripción (ej: hielo 5 bolsas)"
                 value={desc}
                 onChange={e => {
@@ -200,20 +263,29 @@ export default function UploadGasto({ negocio, onRegistered }) {
                 }}
               />
               <input
-                style={{ ...s.inp, flex: 1, maxWidth: 120, fontSize: 12, padding: '4px 8px', height: 30 }}
+                style={{ ...s.inp, flex: 1, maxWidth: 150 }}
                 type="number"
                 placeholder="Monto"
                 value={monto}
                 onChange={e => setMonto(e.target.value)}
               />
               <select
-                style={{ ...s.sel, flex: '0 0 110px', fontSize: 11, padding: '4px 6px', height: 30 }}
+                style={{ ...s.sel, flex: '0 0 140px' }}
                 value={cat}
                 onChange={e => setCat(e.target.value)}
               >
                 {CATS.map(c => <option key={c}>{c}</option>)}
               </select>
             </div>
+            <label style={{ display: 'grid', gap: 4, marginBottom: 8, color: C.sub, fontSize: 10 }}>
+              Fecha del gasto
+              <input
+                style={{ ...s.inp, minHeight: 36 }}
+                type="date"
+                value={date}
+                onChange={event => setDate(event.target.value)}
+              />
+            </label>
 
             <div style={{ display: 'flex', gap: 6 }}>
               <button

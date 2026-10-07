@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useAuth } from "../../hooks/useAuth.jsx";
 import { C, s } from "../../constants/theme.js";
 import { Badge, Modal, TabBar } from "../common/index.jsx";
+import { OWNER_EMAIL } from "../../constants/roles.js";
 
 export default function UserMgmt({ negocios, onClose }) {
   const { users, createUser, updateUser, deleteUser, user:me } = useAuth();
@@ -9,27 +10,35 @@ export default function UserMgmt({ negocios, onClose }) {
   const [f,      setF]      = useState({ name:'', email:'', role:'mesero', negocios:'all', password:'', negArr:[] });
   const [editId, setEditId] = useState(null);
   const [msg,    setMsg]    = useState('');
-  const ROL_OPTS  = [['administrador','Administrador'],['barra','Barra'],['mesero','Mesero'],['dueño','Dueño']];
-  const ROLE_BADGE = { admin:C.amber, administrador:C.amber, auxiliar:C.indigo, jefe:C.green, dueño:C.green, barra:C.amber, mesero:C.indigo };
+  const [saving, setSaving] = useState(false);
+  const ROL_OPTS  = [['gerente','Gerente'],['barra','Barra'],['mesero','Mesero'],['dueño','Dueño']];
+  const ROLE_BADGE = { admin:C.amber, administrador:C.amber, gerente:C.amber, auxiliar:C.indigo, jefe:C.green, dueño:C.green, barra:C.amber, mesero:C.indigo };
 
   const resetForm = () => setF({ name:'', email:'', role:'mesero', negocios:'all', password:'', negArr:[] });
 
   const submit = async () => {
     setMsg('');
-    const negVal = f.role==='administrador' || f.role==='dueño' ? 'all' : (f.negArr.length ? f.negArr : 'all');
-    if (editId) {
-      const changes = { name:f.name, email:f.email, role:f.role, negocios:negVal };
-      if (f.password) changes.password = f.password;
-      await updateUser(editId, changes);
-      setMsg('✓ Usuario actualizado');
-      setEditId(null);
-    } else {
-      const res = await createUser({ name:f.name, email:f.email, role:f.role, negocios:negVal, password:f.password });
-      if (res.error) { setMsg('⚠ '+res.error); return; }
-      setMsg('✓ Usuario creado');
+    const negVal = f.role==='dueño' ? 'all' : (f.negArr.length ? f.negArr : 'all');
+    setSaving(true);
+    try {
+      if (editId) {
+        const changes = { name:f.name, email:f.email, role:f.role, negocios:negVal };
+        if (f.password) changes.password = f.password;
+        await updateUser(editId, changes);
+        setMsg('✓ Usuario actualizado');
+        setEditId(null);
+      } else {
+        const res = await createUser({ name:f.name, email:f.email, role:f.role, negocios:negVal, password:f.password });
+        if (res.error) { setMsg('⚠ '+res.error); return; }
+        setMsg('✓ Usuario creado');
+      }
+      resetForm();
+      setTab('list');
+    } catch (error) {
+      setMsg(`⚠ ${error.message || 'No fue posible guardar el usuario.'}`);
+    } finally {
+      setSaving(false);
     }
-    resetForm();
-    setTab('list');
   };
 
   const startEdit = u => {
@@ -54,36 +63,45 @@ export default function UserMgmt({ negocios, onClose }) {
 
       {tab==='list' && (
         <div>
-          {users.map(u => (
+          {users.map(u => {
+            const isMaster = u.email.trim().toLowerCase() === OWNER_EMAIL;
+            return (
             <div key={u.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 0',borderBottom:`1px solid ${C.border}40`}}>
               <div style={{width:36,height:36,borderRadius:'50%',background:(ROLE_BADGE[u.role]||C.muted)+'22',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,fontSize:13,color:ROLE_BADGE[u.role]||C.muted,flexShrink:0}}>
                 {u.name.slice(0,2).toUpperCase()}
               </div>
               <div style={{flex:1}}>
-                <div style={{fontWeight:600,fontSize:13}}>{u.name} {u.id===me?.id&&<Badge color={C.amber} small>yo</Badge>}</div>
+                <div style={{fontWeight:600,fontSize:13}}>{u.name} {u.id===me?.id&&<Badge color={C.amber} small>yo</Badge>} {isMaster&&<Badge color={C.amber} small>maestro protegido</Badge>}</div>
                 <div style={{fontSize:11,color:C.sub}}>{u.email} · negocios: {u.negocios==='all'?'todos':Array.isArray(u.negocios)?u.negocios.join(', '):u.negocios}</div>
               </div>
               <Badge color={ROLE_BADGE[u.role]||C.muted} small>{u.role}</Badge>
-              <button style={{...s.btn(),padding:'3px 10px',fontSize:11}} onClick={()=>startEdit(u)}>Editar</button>
-              {u.id!==me?.id && (
+              <button style={{...s.btn(),padding:'3px 10px',fontSize:11}} onClick={()=>startEdit(u)}>{isMaster?'Editar perfil':'Editar'}</button>
+              {!isMaster&&u.id!==me?.id && (
                 <button style={{...s.btn('danger'),padding:'3px 10px',fontSize:11}} onClick={()=>{ if(window.confirm(`¿Eliminar a ${u.name}?`)) deleteUser(u.id); }}>✕</button>
               )}
             </div>
-          ))}
+          );})}
           <button style={{...s.btn('primary'),marginTop:'1rem'}} onClick={()=>{ setEditId(null); resetForm(); setTab('form'); }}>+ Nuevo Usuario</button>
         </div>
       )}
 
       {tab==='form' && (
         <div>
+          {editId&&users.find(account=>account.id===editId)?.email.trim().toLowerCase()===OWNER_EMAIL&&(
+            <div style={{padding:'8px 10px',marginBottom:12,borderRadius:8,background:C.amber+'15',color:C.amber,fontSize:11}}>
+              El correo, el rol y los permisos de la única cuenta maestra están protegidos. Aquí solo puedes cambiar el nombre o la contraseña.
+            </div>
+          )}
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
             <div><div style={s.label}>Nombre</div><input style={s.inp} value={f.name} onChange={e=>setF(p=>({...p,name:e.target.value}))}/></div>
-            <div><div style={s.label}>Email</div><input style={s.inp} type="email" value={f.email} onChange={e=>setF(p=>({...p,email:e.target.value}))}/></div>
+            <div><div style={s.label}>Email</div><input style={s.inp} type="email" value={f.email} onChange={e=>setF(p=>({...p,email:e.target.value}))} disabled={f.email.trim().toLowerCase()===OWNER_EMAIL}/></div>
             <div>
               <div style={s.label}>Rol</div>
-              <select style={s.sel} value={f.role} onChange={e=>setF(p=>({...p,role:e.target.value}))}>
-                {ROL_OPTS.map(([v,l])=><option key={v} value={v}>{l}</option>)}
-              </select>
+              {f.email.trim().toLowerCase()===OWNER_EMAIL
+                ? <div style={{...s.inp,color:C.amber}}>Administrador maestro</div>
+                : <select style={s.sel} value={f.role} onChange={e=>setF(p=>({...p,role:e.target.value}))}>
+                    {ROL_OPTS.map(([v,l])=><option key={v} value={v}>{l}</option>)}
+                  </select>}
             </div>
             <div>
               <div style={s.label}>Contraseña {editId&&'(vacío = sin cambiar)'}</div>
@@ -115,7 +133,7 @@ export default function UserMgmt({ negocios, onClose }) {
           )}
 
           <div style={{display:'flex',gap:8,marginTop:'1rem'}}>
-            <button style={s.btn('primary')} onClick={submit}>{editId?'Guardar Cambios':'Crear Usuario'}</button>
+            <button style={s.btn('primary')} onClick={submit} disabled={saving}>{saving?'Guardando...':editId?'Guardar Cambios':'Crear Usuario'}</button>
             <button style={s.btn()} onClick={()=>{ setTab('list'); setEditId(null); }}>Cancelar</button>
           </div>
         </div>

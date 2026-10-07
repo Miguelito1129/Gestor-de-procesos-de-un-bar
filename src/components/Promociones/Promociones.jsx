@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { C, s } from "../../constants/theme.js";
 import { localDelete, localFetch, localInsert, localUpdate } from "../../lib/localApi.js";
 import { uid } from "../../utils/helpers.js";
-import { Badge, SectionTitle } from "../common/index.jsx";
+import { Badge } from "../common/index.jsx";
 
 const EMPTY_FORM = {
   nombre: "",
@@ -14,6 +14,12 @@ const EMPTY_FORM = {
   precio_promocional: "",
 };
 const COURTESY_NAMES = ["agua", "gatorade", "gaseosa"];
+const PROMOTION_TYPES = {
+  "2x1": { label: "2 × 1", icon: "✦", className: "two-for-one" },
+  cortesia: { label: "Producto + cortesía", icon: "🎁", className: "courtesy" },
+  combo: { label: "Combo", icon: "🍸", className: "combo" },
+  precio_especial: { label: "Precio especial", icon: "◈", className: "special-price" },
+};
 
 const promotionDescription = (promotion, names) => {
   const main = names.get(promotion.producto_principal_id) || "Producto eliminado";
@@ -104,27 +110,65 @@ export default function Promociones({ negocio }) {
   };
 
   return (
-    <div>
-      <SectionTitle>🏷️ Promociones — {negocio.name}</SectionTitle>
-      <p style={{ color: C.sub, fontSize: 13, marginTop: -10, marginBottom: 16 }}>
-        Define descuentos y cortesías. Las promociones activas se aplican al momento de despachar la comanda.
-      </p>
+    <div className="promotion-page">
+      <header className="promotion-page__hero">
+        <div>
+          <div className="promotion-page__eyebrow"><span>✦</span> OFERTAS DEL LOCAL</div>
+          <h1>Promociones</h1>
+          <p>Arma beneficios claros para tus clientes. Las promociones activas se aplican al despachar la comanda.</p>
+        </div>
+        <button
+          type="button"
+          className={`promotion-create-button${showForm ? " is-cancel" : ""}`}
+          onClick={() => { setShowForm(value => !value); setMessage(""); }}
+        >
+          <span aria-hidden="true">{showForm ? "×" : "+"}</span>
+          {showForm ? "Cerrar formulario" : "Nueva promoción"}
+        </button>
+      </header>
 
-      <div className="promotion-help">
-        <span>2×1</span><p>Descuenta dos unidades del inventario y cobra una.</p>
-        <span>🎁 Cortesía</span><p>Solo Agua, Gatorade o Gaseosa; se descuenta al despachar.</p>
-        <span>Combo</span><p>Combina varias cantidades de productos con un precio único.</p>
+      <div className="promotion-overview">
+        <div className="promotion-overview__stat promotion-overview__stat--active">
+          <span className="promotion-overview__icon" aria-hidden="true">✦</span>
+          <div><strong>{promociones.filter(item => item.activo).length}</strong><span>Promociones activas</span></div>
+        </div>
+        <div className="promotion-overview__stat">
+          <span className="promotion-overview__icon" aria-hidden="true">◈</span>
+          <div><strong>{promociones.length}</strong><span>En total</span></div>
+        </div>
+        <div className="promotion-overview__hint">
+          <span aria-hidden="true">ⓘ</span>
+          <p>Los descuentos se reflejan en el pedido y el inventario se ajusta al entregar.</p>
+        </div>
       </div>
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 12 }}>
-        <Badge color={C.green} small>{promociones.filter(item => item.activo).length} activas</Badge>
-        <button type="button" style={s.btn("primary")} onClick={() => { setShowForm(value => !value); setMessage(""); }}>
-          {showForm ? "Cancelar" : "＋ Nueva promoción"}
-        </button>
+      <div className="promotion-guide">
+        <div className="promotion-guide__heading">
+          <strong>Tipos de promoción disponibles</strong>
+          <span>Una guía rápida de cómo se aplica cada oferta</span>
+        </div>
+        <div className="promotion-guide__grid">
+          <article className="promotion-guide__item promotion-guide__item--amber">
+            <span>2×1</span><div><strong>2 × 1</strong><p>Entrega varias unidades y cobra una.</p></div>
+          </article>
+          <article className="promotion-guide__item promotion-guide__item--violet">
+            <span>🎁</span><div><strong>Producto + cortesía</strong><p>Incluye agua, Gatorade o gaseosa.</p></div>
+          </article>
+          <article className="promotion-guide__item promotion-guide__item--mint">
+            <span>🍸</span><div><strong>Combo</strong><p>Varios productos por un precio único.</p></div>
+          </article>
+          <article className="promotion-guide__item promotion-guide__item--blue">
+            <span>◈</span><div><strong>Precio especial</strong><p>Un producto con precio promocional.</p></div>
+          </article>
+        </div>
       </div>
 
       {showForm && (
         <form className="promotion-form" onSubmit={save}>
+          <div className="promotion-form__heading">
+            <span aria-hidden="true">✦</span>
+            <div><strong>Crear una promoción</strong><p>Completa los datos para activar una nueva oferta.</p></div>
+          </div>
           <div>
             <label style={s.label}>Nombre visible</label>
             <input style={s.inp} value={form.nombre} placeholder="Ej.: 2×1 Cervezas viernes" onChange={event => setForm(current => ({ ...current, nombre: event.target.value }))} />
@@ -180,24 +224,47 @@ export default function Promociones({ negocio }) {
             <label style={s.label}>Precio del combo</label>
             <input style={s.inp} type="number" min="0" value={form.precio_promocional} onChange={event => setForm(current => ({ ...current, precio_promocional: event.target.value }))} />
           </div>}
-          <button style={{ ...s.btn("success"), alignSelf: "end" }} type="submit">Guardar promoción</button>
+          <button className="promotion-submit" style={{ ...s.btn("success"), alignSelf: "end" }} type="submit">
+            <span aria-hidden="true">✓</span> Guardar promoción
+          </button>
         </form>
       )}
 
-      {message && <div style={{ color: message.startsWith("✓") ? C.green : C.red, fontSize: 12, marginBottom: 10 }}>{message}</div>}
-      {loading ? <p style={{ color: C.sub, fontSize: 13 }}>Cargando promociones...</p> : promociones.length === 0 ? (
-        <div style={{ ...s.card, color: C.sub, textAlign: "center", fontSize: 13 }}>Aún no hay promociones configuradas.</div>
+      {message && <div className={`promotion-message${message.startsWith("✓") ? " is-success" : " is-error"}`} role="status">{message}</div>}
+      <div className="promotion-list-heading">
+        <div><strong>Tus promociones</strong><span>Administra su disponibilidad y revisa sus condiciones.</span></div>
+        <Badge color={C.green} small>{promociones.filter(item => item.activo).length} activas</Badge>
+      </div>
+      {loading ? <div className="promotion-empty"><span>✦</span><strong>Cargando promociones...</strong></div> : promociones.length === 0 ? (
+        <div className="promotion-empty">
+          <span>◇</span>
+          <strong>Aún no hay promociones</strong>
+          <p>Crea tu primera oferta para empezar a atraer clientes.</p>
+          {!showForm&&<button type="button" className="promotion-empty__action" onClick={() => { setShowForm(true); setMessage(""); }}>＋ Crear promoción</button>}
+        </div>
       ) : <div className="promotion-list">
         {promociones.map(promotion => (
-          <article key={promotion.id} className={`promotion-card ${promotion.activo ? "is-active" : ""}`}>
+          <article key={promotion.id} className={`promotion-card promotion-card--${PROMOTION_TYPES[promotion.tipo]?.className||"special-price"} ${promotion.activo ? "is-active" : ""}`}>
             <div className="promotion-card__top">
-              <div><strong>{promotion.tipo === "2x1" ? "2×1" : promotion.tipo === "cortesia" ? "🎁 Cortesía" : promotion.tipo === "combo" ? "🍻 Combo" : "🏷️ Precio especial"}</strong><h3>{promotion.nombre}</h3></div>
-              <Badge color={promotion.activo ? C.green : C.muted} small>{promotion.activo ? "Activa" : "Inactiva"}</Badge>
+              <div className="promotion-card__identity">
+                <span className="promotion-card__icon" aria-hidden="true">{PROMOTION_TYPES[promotion.tipo]?.icon||"◈"}</span>
+                <div><strong>{PROMOTION_TYPES[promotion.tipo]?.label||"Precio especial"}</strong><h3>{promotion.nombre}</h3></div>
+              </div>
+              <Badge color={promotion.activo ? C.green : C.muted} small>{promotion.activo ? "Activa" : "Pausada"}</Badge>
             </div>
-            <p>{promotionDescription(promotion, productNames)}{["combo", "precio_especial"].includes(promotion.tipo) && <><br /><b>Precio: ${Number(promotion.precio_promocional || 0).toLocaleString("es-CO")}</b></>}</p>
+            <div className="promotion-card__details">
+              <p>{promotionDescription(promotion, productNames)}</p>
+              {["combo", "precio_especial"].includes(promotion.tipo) && (
+                <div className="promotion-card__price"><span>Precio promocional</span><strong>${Number(promotion.precio_promocional || 0).toLocaleString("es-CO")}</strong></div>
+              )}
+            </div>
             <div className="promotion-card__actions">
-              <button type="button" onClick={() => toggle(promotion)}>{promotion.activo ? "Pausar" : "Activar"}</button>
-              <button type="button" className="is-danger" onClick={() => remove(promotion)}>Eliminar</button>
+              <button type="button" className={promotion.activo ? "is-pause" : "is-activate"} onClick={() => toggle(promotion)}>
+                <span aria-hidden="true">{promotion.activo ? "Ⅱ" : "▶"}</span>{promotion.activo ? "Pausar oferta" : "Activar oferta"}
+              </button>
+              <button type="button" className="is-danger" onClick={() => remove(promotion)}>
+                <span aria-hidden="true">×</span>Eliminar
+              </button>
             </div>
           </article>
         ))}

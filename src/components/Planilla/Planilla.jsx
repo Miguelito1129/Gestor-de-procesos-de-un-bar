@@ -3,8 +3,9 @@ import { C, s, COP, NOW_TIME, BILLETS } from "../../constants/theme.js";
 import { ROL_COLORS, ROLES_LIST } from "../../constants/roles.js";
 import { CAT_COLORS } from "../../constants/roles.js";
 import { useAuth } from "../../hooks/useAuth.jsx";
-import { localFetch, localUpdate, localDeleteStaff, localInsert } from "../../lib/localApi.js";
+import { localFetch, localUpdate, localDelete, localDeleteStaff, localInsert, localInsertDetailed } from "../../lib/localApi.js";
 import { uid } from "../../utils/helpers.js";
+import { formatLocalDateKey, formatLocalTime } from "../../utils/dateTime.js";
 import { printPlanilla } from "../../utils/printPlanilla.js";
 import { Badge, Metric, SectionTitle, TabBar, Modal } from "../common/index.jsx";
 const r1000 = v => Math.round(v / 1000) * 1000; // redondear al millar más cercano
@@ -14,31 +15,169 @@ const COMANDA_STATUS = {
   pagada: ['Pagado', C.green],
   cancelada: ['Cancelado', C.red],
 };
+const PLANILLA_ORDER_GROUPS = [
+  { id: 'todos', title: 'Todos los pedidos', description: 'Todas las comandas registradas durante este turno.' },
+  { id: 'enviada', title: 'Pendientes por autorizar', description: 'Pedidos que esperan revisión y autorización de Barra.' },
+  { id: 'entregada_falta_pago', title: 'Entregados · falta pago', description: 'Pedidos despachados que todavía no tienen pago confirmado.' },
+  { id: 'pagada', title: 'Pagados', description: 'Pedidos cuyo pago fue confirmado.' },
+  { id: 'cancelada', title: 'Cancelados', description: 'Pedidos cancelados; no cuentan como ventas.' },
+  { id: 'otros', title: 'Otros estados', description: 'Pedidos con un estado diferente a los habituales.' },
+];
 const formatComandaTime = value => value
-  ? new Date(value).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })
+  ? formatLocalTime(value)
   : '—';
+const planillaDateKey = value => {
+  const date = String(value || '');
+  if (/^\d{4}-\d{2}-\d{2}/.test(date)) return date.slice(0, 10);
+  const match = date.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  return match
+    ? `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`
+    : '';
+};
+const timestampDateKey = value => {
+  return formatLocalDateKey(value);
+};
 
 function ComandaMeseroFilter({ meseros, comandas, selected, onChange }) {
-  const countFor = meseroId => comandas.filter(comanda =>
-    (comanda.mesero_id || comanda.mesero_nombre || 'sin_mesero') === meseroId
+  const safeMeseros = Array.isArray(meseros) ? meseros.filter(mesero => mesero?.id && mesero?.nombre) : [];
+  const safeComandas = Array.isArray(comandas) ? comandas.filter(comanda => comanda && typeof comanda === 'object') : [];
+  const countFor = meseroId => safeComandas.filter(comanda =>
+    String(comanda.mesero_id || comanda.mesero_nombre || 'sin_mesero') === String(meseroId)
   ).length;
 
   return (
     <div className="barra-waiter-filter planilla-comanda-filter">
       <div className="barra-waiter-filter__label">
         <span>Comandas por mesero</span>
-        <span>{selected === 'todos' ? comandas.length : countFor(selected)} comandas</span>
+        <span>{selected === 'todos' ? safeComandas.length : countFor(selected)} comandas</span>
       </div>
       <div className="barra-waiter-filter__chips" role="group" aria-label="Filtrar comandas por mesero">
         <button type="button" className={`barra-waiter-chip ${selected === 'todos' ? 'is-active' : ''}`} onClick={() => onChange('todos')}>
-          <span>Todos</span><b>{comandas.length}</b>
+          <span>Todos</span><b>{safeComandas.length}</b>
         </button>
-        {meseros.map(mesero => (
+        {safeMeseros.map(mesero => (
           <button key={mesero.id} type="button" className={`barra-waiter-chip ${selected === mesero.id ? 'is-active' : ''}`} onClick={() => onChange(mesero.id)}>
             <span>{mesero.nombre}</span><b>{countFor(mesero.id)}</b>
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+function PlanillaComandaTabs({ comandas, itemsByOrder, activeStatus, onStatusChange }) {
+  const safeOrders = Array.isArray(comandas) ? comandas.filter(order => order && typeof order === 'object') : [];
+  const ordersForStatus = statusId => safeOrders.filter(order => {
+    if (statusId === 'todos') return true;
+    if (statusId === 'otros') return !COMANDA_STATUS[order.estado];
+    return order.estado === statusId;
+  });
+  const activeGroup = PLANILLA_ORDER_GROUPS.find(group => group.id === activeStatus) || PLANILLA_ORDER_GROUPS[0];
+  const visibleOrders = ordersForStatus(activeGroup.id);
+
+  return (
+    <>
+      <div className="barra-order-tabs planilla-order-tabs" role="tablist" aria-label="Filtrar pedidos de la planilla por estado">
+        {PLANILLA_ORDER_GROUPS.map(group => (
+          <button
+            key={group.id}
+            id={`planilla-order-tab-${group.id}`}
+            type="button"
+            role="tab"
+            aria-selected={activeGroup.id === group.id}
+            aria-controls="planilla-orders-panel"
+            className={`barra-order-tab${group.id !== 'todos' && group.id !== 'otros' ? ` barra-order-tab--${group.id}` : ''}${activeGroup.id === group.id ? ' is-active' : ''}`}
+            onClick={() => onStatusChange(group.id)}
+          >
+            <span>{group.title}</span><b>{ordersForStatus(group.id).length}</b>
+          </button>
+        ))}
+      </div>
+      <section
+        id="planilla-orders-panel"
+        role="tabpanel"
+        aria-labelledby={`planilla-order-tab-${activeGroup.id}`}
+        className={`barra-order-group${activeGroup.id !== 'todos' && activeGroup.id !== 'otros' ? ` barra-order-group--${activeGroup.id}` : ''}`}
+      >
+        <header className="barra-order-group__header">
+          <div><h3>{activeGroup.title}</h3><p>{activeGroup.description}</p></div>
+          <span>{visibleOrders.length}</span>
+        </header>
+        {!visibleOrders.length && <p className="barra-order-empty">No hay pedidos en esta categoría.</p>}
+        {visibleOrders.map(order => {
+          const [statusLabel, statusColor] = COMANDA_STATUS[order.estado] || [order.estado || 'Estado desconocido', C.sub];
+          return (
+            <article key={order.id} className="barra-order planilla-order">
+              <div className="planilla-order__summary">
+                <div className="barra-order__identity">
+                  <strong>Comanda #{order.consecutivo || '—'}</strong>
+                  <span>Mesero: {order.mesero_nombre || order.mesero_id || 'Sin asignar'}</span>
+                  <time>Creada: {formatComandaTime(order.creado_en)}</time>
+                </div>
+                <Badge color={statusColor} small>{statusLabel}</Badge>
+                <strong className="barra-order__total">{COP(order.total)}</strong>
+              </div>
+              <div className="planilla-order__times">
+                <span>Autorizada: {formatComandaTime(order.confirmado_en)}</span>
+                <span>Entregada: {formatComandaTime(order.despachado_en)}</span>
+                <span>Pago: {formatComandaTime(order.pagado_en || order.pago_registrado_en)}</span>
+              </div>
+              <div className="planilla-order__items">
+                {(itemsByOrder[order.id] || []).length
+                  ? itemsByOrder[order.id].map(item => (
+                    <div key={item.id}>
+                      <span>{item.cantidad} × {item.nombre}</span>
+                      <strong>{COP(Number(item.cantidad) * Number(item.precio_unitario))}</strong>
+                    </div>
+                  ))
+                  : <span className="planilla-order__no-items">Sin productos registrados.</span>}
+              </div>
+            </article>
+          );
+        })}
+      </section>
+    </>
+  );
+}
+
+function BankReceiptButton({ transfer, meseroName }) {
+  const [open, setOpen] = useState(false);
+  if (!transfer.foto_url) return null;
+  return (
+    <>
+      <button type="button" className="planilla-bank-receipt-button" onClick={() => setOpen(true)}>
+        Ver comprobante
+      </button>
+      {open&&<Modal title={`Comprobante · ${meseroName}`} onClose={()=>setOpen(false)} width="min(760px,96vw)">
+        <img className="planilla-bank-receipt-image" src={transfer.foto_url} alt={`Comprobante ${PLAT_LABELS[transfer.plataforma] || transfer.plataforma} por ${COP(transfer.monto)}`}/>
+        <div className="planilla-bank-receipt-caption">
+          <strong>{PLAT_LABELS[transfer.plataforma] || transfer.plataforma}</strong>
+          <span>{COP(transfer.monto)}</span>
+        </div>
+      </Modal>}
+    </>
+  );
+}
+
+function BankTransferHistory({ transfers, users }) {
+  const namesById = new Map((users || []).map(account => [String(account.id), account.name]));
+  if (!transfers.length) return <div className="planilla-bank-history-empty">No hay transferencias registradas en esta planilla.</div>;
+  return (
+    <div className="planilla-bank-history">
+      {transfers.map(transfer => {
+        const meseroName = namesById.get(String(transfer.mesero_id)) || transfer.mesero_nombre || 'Mesero no disponible';
+        return (
+          <article className="planilla-bank-history__row" key={transfer.id}>
+            <div className="planilla-bank-history__identity">
+              <strong>{meseroName}</strong>
+              <span>{PLAT_LABELS[transfer.plataforma] || transfer.plataforma} · {formatComandaTime(transfer.created_at) || transfer.hora || '—'}</span>
+              {transfer.descripcion&&<small>{transfer.descripcion}</small>}
+            </div>
+            <strong className="planilla-bank-history__amount">{COP(transfer.monto)}</strong>
+            <BankReceiptButton transfer={transfer} meseroName={meseroName}/>
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -67,10 +206,10 @@ const PLAT_COLORS = {nequi:'#FF0066',bancolombia:'#FFCD00',datafono:'#34d399',da
 const PLAT_LABELS = {nequi:'Nequi',bancolombia:'Bancolombia',datafono:'Datáfono',daviplata:'Daviplata',llave:'Llave',qr:'QR'};
 import NuevoStaffModal from "./NuevoStaffModal.jsx";
 import PerspectivaCierre from "./PerspectivaCierre.jsx";
-import UploadTransfer from "../common/UploadReceipt.jsx";
+import { preparePhoto } from "../common/UploadGasto.jsx";
 
 export default function Planilla({ negocio, onUpdateNegocio }) {
-  const { user } = useAuth();
+  const { user, users } = useAuth();
   const isJefe = user?.role === 'jefe';
   const isAux  = user?.role === 'auxiliar';
   const TURNO_KEY = `gesbar_turno_${negocio.id}`;
@@ -84,6 +223,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
   const [apertura,setApertura] = useState(()=>saved().apertura||'');
   const [baseCaja,setBaseCaja] = useState(()=>saved().baseCaja||'1000000');
   const [staffFilter,setStaffFilter] = useState('');
+  const [authorizedMeseroIds,setAuthorizedMeseroIds] = useState(()=>saved().authorizedMeseroIds||[]);
   const [staffActivo,setStaffActivo] = useState(()=>{
     const sv=saved();
     if(sv.staffActivo) return sv.staffActivo;
@@ -105,16 +245,30 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
   const [gastosT,setGastosT]      = useState(()=>saved().gastosT||[]);
   const [bancosTransfs,setBancosTransfs] = useState(()=>{
     const sv=saved();
-    if(sv.bancosTransfs?.length) return sv.bancosTransfs;
+    if(sv.bancosTransfs?.length) return sv.bancosTransfs.map(({foto_url,comprobante,...transfer})=>({
+      ...transfer,
+      id:String(transfer.id).startsWith('_')?transfer.id:`_${transfer.id}`,
+    }));
     // migración desde formato anterior {nequi:'',bancolombia:'',…}
     if(sv.bancos) return Object.entries(sv.bancos).filter(([,v])=>parseInt(v)>0).map(([k,v])=>({id:`_${k}`,plataforma:k,monto:parseInt(v)||0,ref:'',hora:''}));
     return [];
   });
-  const [bForm,setBForm] = useState({plataforma:'nequi',monto:'',ref:''});
+  const [bForm,setBForm] = useState({plataforma:'nequi',monto:'',ref:'',meseroId:'',comprobante:''});
+  const [savingTransfer,setSavingTransfer] = useState(false);
+  const [bankTransferError,setBankTransferError] = useState('');
+  const [bankTransferMessage,setBankTransferMessage] = useState('');
+  const [bankTransfersLoading,setBankTransfersLoading] = useState(false);
+  const [planillaBankTransfers,setPlanillaBankTransfers] = useState([]);
+  const [bankHistoryError,setBankHistoryError] = useState('');
+  const [transferLinkError,setTransferLinkError] = useState('');
   const [extras,setExtras]        = useState(()=>saved().extras||'');
   const [pendientes,setPendientes]= useState(()=>saved().pendientes||'');
   const [novedades,setNovedades]  = useState(()=>saved().novedades||'');
   const [tab,setTab]              = useState('productos');
+  const [historySearch,setHistorySearch] = useState('');
+  const [historyFrom,setHistoryFrom] = useState('');
+  const [historyTo,setHistoryTo] = useState('');
+  const [historyPage,setHistoryPage] = useState(0);
   const [ventasMesero,setVentasMesero] = useState(()=>saved().ventasMesero||{});
   const [billetes,setBilletes]    = useState(()=>saved().billetes||{});
   const [resumen,setResumen]      = useState(null);
@@ -123,18 +277,25 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
   const [viewComandas,setViewComandas] = useState([]);
   const [viewComandaItems,setViewComandaItems] = useState({});
   const [comandasLoading,setComandasLoading] = useState(false);
+  const [comandasError,setComandasError] = useState('');
   const [viewMeseroFilter,setViewMeseroFilter] = useState('todos');
+  const [viewActiveStatus,setViewActiveStatus] = useState('todos');
   const [editingPlatId,setEditingPlatId]     = useState(null); // id de la fila con selector de plataforma abierto
   const [pctBarra,setPctBarra]               = useState(()=>saved().pctBarra??3);
   const [pctMeseros,setPctMeseros]           = useState(()=>saved().pctMeseros??5);
-  const viewMeseros = [...new Map(viewComandas.map(comanda => {
-    const id = comanda.mesero_id || comanda.mesero_nombre || 'sin_mesero';
-    return [id, { id, nombre: comanda.mesero_nombre || comanda.mesero_id || 'Sin mesero' }];
-  }).values())].sort((first, second) => first.nombre.localeCompare(second.nombre, 'es'));
+  const viewMeseros = [...new Map(viewComandas
+    .filter(comanda => comanda && typeof comanda === 'object')
+    .map(comanda => {
+      const id = String(comanda.mesero_id || comanda.mesero_nombre || 'sin_mesero');
+      const nombre = String(comanda.mesero_nombre || comanda.mesero_id || 'Sin mesero');
+      return [id, { id, nombre }];
+    })).values()]
+    .filter(mesero => mesero && typeof mesero.nombre === 'string')
+    .sort((first, second) => String(first?.nombre || '').localeCompare(String(second?.nombre || ''), 'es'));
   const viewComandasVisibles = viewMeseroFilter === 'todos'
     ? viewComandas
-    : viewComandas.filter(comanda =>
-      (comanda.mesero_id || comanda.mesero_nombre || 'sin_mesero') === viewMeseroFilter
+    : viewComandas.filter(comanda => comanda && typeof comanda === 'object' &&
+      String(comanda.mesero_id || comanda.mesero_nombre || 'sin_mesero') === String(viewMeseroFilter)
     );
 
   useEffect(() => {
@@ -155,12 +316,11 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
           setBaseCaja(String(abierto.base_caja));
         }
         if (abierto.fecha_apertura) {
-          setApertura(new Date(abierto.fecha_apertura).toLocaleTimeString('es-CO', {
-            hour: '2-digit',
-            minute: '2-digit',
-          }));
+          setApertura(formatLocalTime(abierto.fecha_apertura));
         }
+        setAuthorizedMeseroIds(Array.isArray(abierto.meseros_ids) ? abierto.meseros_ids.map(String) : []);
       } else {
+        setAuthorizedMeseroIds([]);
         setTurnoId(currentTurnoId => {
           if (currentTurnoId) setStep('inicio');
           return '';
@@ -171,42 +331,131 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
   }, [negocio.id]);
 
   useEffect(() => {
+    if (!turnoId) return undefined;
+    let active = true;
+    const refreshAuthorizedWaiters = async () => {
+      const rows = await localFetch('turnos', `id=eq.${turnoId}&select=id,meseros_ids,estado&limit=1`);
+      if (!active || !Array.isArray(rows) || !rows[0]) return;
+      const ids = rows[0].estado === 'abierto' && Array.isArray(rows[0].meseros_ids)
+        ? rows[0].meseros_ids.map(String)
+        : [];
+      setAuthorizedMeseroIds(current => current.join('|') === ids.join('|') ? current : ids);
+    };
+    void refreshAuthorizedWaiters();
+    const interval = window.setInterval(refreshAuthorizedWaiters, 3000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [turnoId]);
+
+  useEffect(() => {
+    if (!turnoId) {
+      setBankTransfersLoading(false);
+      return undefined;
+    }
+    let active = true;
+    setBankTransfersLoading(true);
+    setBankTransferError('');
+    (async () => {
+      const rows = await localFetch(
+        'transferencias',
+        `turno_id=eq.${encodeURIComponent(turnoId)}&select=*&order=created_at.asc`,
+      );
+      if (!active) return;
+      if (!Array.isArray(rows)) {
+        setBankTransferError('No fue posible cargar los comprobantes guardados del turno.');
+      } else {
+        setBancosTransfs(current => rows.length
+          ? rows.map(row => ({
+            ...row,
+            monto: Number(row.monto) || 0,
+            ref: row.descripcion || '',
+          }))
+          : current.filter(transfer => String(transfer.id).startsWith('_')));
+      }
+      setBankTransfersLoading(false);
+    })();
+    return () => { active = false; };
+  }, [turnoId]);
+
+  useEffect(() => {
     if (!viewPlanilla) {
       setViewComandas([]);
       setViewComandaItems({});
+      setPlanillaBankTransfers([]);
+      setBankHistoryError('');
       setViewMeseroFilter('todos');
+      setViewActiveStatus('todos');
+      setComandasError('');
       return undefined;
     }
     let active = true;
     setComandasLoading(true);
+    setComandasError('');
+    setViewComandas([]);
+    setViewComandaItems({});
+    setPlanillaBankTransfers([]);
+    setBankHistoryError('');
+    setViewMeseroFilter('todos');
     (async () => {
-      const shifts = await localFetch(
-        'turnos',
-        `negocio_id=eq.${negocio.id}&select=*&order=fecha_apertura.desc`,
-      );
-      const selectedShifts = (shifts || []).filter(shift =>
-        shift.legacy_planilla_id === viewPlanilla.id
-      );
-      const orders = (await Promise.all(selectedShifts.map(shift =>
-        localFetch('comandas', `turno_id=eq.${shift.id}&select=*&order=creado_en.asc`)
-      ))).flat().filter(Boolean);
-      const itemRows = (await Promise.all(orders.map(order =>
-        localFetch('comanda_items', `comanda_id=eq.${order.id}&select=*`)
-      ))).flat().filter(Boolean);
-      const products = await localFetch('productos', `negocio_id=eq.${negocio.id}&select=id,name`);
-      const names = new Map((products || []).map(product => [product.id, product.name]));
-      const groupedItems = itemRows.reduce((groups, item) => ({
-        ...groups,
-        [item.comanda_id]: [...(groups[item.comanda_id] || []), {
-          ...item,
-          nombre: names.get(item.producto_id) || 'Producto no disponible',
-        }],
-      }), {});
-      if (active) {
-        setViewComandas(orders);
-        setViewComandaItems(groupedItems);
-        setViewMeseroFilter('todos');
-        setComandasLoading(false);
+      try {
+        const shifts = await localFetch(
+          'turnos',
+          `negocio_id=eq.${negocio.id}&select=*&order=fecha_apertura.desc`,
+        );
+        if (!Array.isArray(shifts)) throw new Error('No fue posible cargar los turnos.');
+        const planillaDay = planillaDateKey(viewPlanilla.fecha);
+        const linkedShifts = shifts.filter(shift =>
+          String(shift.legacy_planilla_id || '') === String(viewPlanilla.id)
+        );
+        const selectedShifts = linkedShifts.length ? linkedShifts : shifts.filter(shift =>
+          planillaDay && timestampDateKey(shift.fecha_apertura) === planillaDay
+        );
+        const transferGroups = await Promise.all([
+          localFetch('transferencias', `planilla_id=eq.${encodeURIComponent(viewPlanilla.id)}&select=*&order=created_at.asc`),
+          ...selectedShifts.map(shift =>
+            localFetch('transferencias', `turno_id=eq.${encodeURIComponent(shift.id)}&select=*&order=created_at.asc`)
+          ),
+        ]);
+        const bankHistoryFailed = transferGroups.some(group => !Array.isArray(group));
+        const bankTransferRows = bankHistoryFailed
+          ? []
+          : [...new Map(transferGroups.flat().map(transfer => [transfer.id, transfer])).values()];
+        if (active) {
+          setPlanillaBankTransfers(bankTransferRows);
+          setBankHistoryError(bankHistoryFailed ? 'No fue posible cargar los comprobantes de las transferencias.' : '');
+        }
+        const orderGroups = await Promise.all(selectedShifts.map(shift =>
+          localFetch('comandas', `turno_id=eq.${shift.id}&select=*&order=creado_en.asc`)
+        ));
+        if (orderGroups.some(group => !Array.isArray(group))) throw new Error('No fue posible cargar las comandas del turno.');
+        const orders = orderGroups.flat().filter(order => order && typeof order === 'object');
+        const itemGroups = await Promise.all(orders.map(order =>
+          localFetch('comanda_items', `comanda_id=eq.${order.id}&select=*`)
+        ));
+        if (itemGroups.some(group => !Array.isArray(group))) throw new Error('No fue posible cargar los productos de las comandas.');
+        const itemRows = itemGroups.flat().filter(item => item && typeof item === 'object');
+        const products = await localFetch('productos', `negocio_id=eq.${negocio.id}&select=id,name`);
+        if (!Array.isArray(products)) throw new Error('No fue posible cargar los nombres de los productos.');
+        const names = new Map(products.map(product => [product.id, product.name]));
+        const groupedItems = itemRows.reduce((groups, item) => ({
+          ...groups,
+          [item.comanda_id]: [...(groups[item.comanda_id] || []), {
+            ...item,
+            nombre: names.get(item.producto_id) || 'Producto no disponible',
+          }],
+        }), {});
+        if (active) {
+          setViewComandas(orders);
+          setViewComandaItems(groupedItems);
+          setViewMeseroFilter('todos');
+        }
+      } catch (error) {
+        console.error('No fue posible cargar el detalle de comandas de la planilla:', error);
+        if (active) setComandasError(error.message || 'No fue posible cargar las comandas de esta planilla.');
+      } finally {
+        if (active) setComandasLoading(false);
       }
     })();
     return () => { active = false; };
@@ -214,18 +463,45 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
 
   useEffect(()=>{
     if(step==='inicio'||step==='cerrado') return;
-    const data={step,turnoId,apertura,baseCaja,staffActivo,checklist,movs,gastosT,bancosTransfs,extras,pendientes,novedades,ventasMesero,billetes,pctBarra,pctMeseros};
+    const data={step,turnoId,apertura,baseCaja,staffActivo,authorizedMeseroIds,checklist,movs,gastosT,bancosTransfs:bancosTransfs.filter(transfer=>String(transfer.id).startsWith('_')).map(({foto_url,comprobante,...transfer})=>transfer),extras,pendientes,novedades,ventasMesero,billetes,pctBarra,pctMeseros};
     localStorage.setItem(TURNO_KEY, JSON.stringify(data));
-  },[step,turnoId,apertura,movs,gastosT,bancosTransfs,extras,pendientes,novedades,ventasMesero,billetes,checklist,pctBarra,pctMeseros,staffActivo]);
+  },[step,turnoId,apertura,movs,gastosT,bancosTransfs,extras,pendientes,novedades,ventasMesero,billetes,checklist,pctBarra,pctMeseros,staffActivo,authorizedMeseroIds]);
 
 
 
-  const staffFiltrado  = staffActivo.filter(s=>s.name.toLowerCase().includes(staffFilter.toLowerCase())||s.rol.toLowerCase().includes(staffFilter.toLowerCase()));
+  const normalizedStaffFilter = staffFilter.trim().toLocaleLowerCase('es');
+  const staffFiltrado  = staffActivo.filter(person =>
+    String(person.name || '').toLocaleLowerCase('es').includes(normalizedStaffFilter)
+    || String(person.rol || '').toLocaleLowerCase('es').includes(normalizedStaffFilter)
+  );
+  const negocioMeseroUsers = (users||[]).filter(account => {
+    if (account.role !== 'mesero') return false;
+    if (account.negocios === 'all') return true;
+    if (Array.isArray(account.negocios)) return account.negocios.some(id => String(id) === String(negocio.id));
+    if (typeof account.negocios === 'string') {
+      try {
+        const businessIds = JSON.parse(account.negocios);
+        return Array.isArray(businessIds) && businessIds.some(id => String(id) === String(negocio.id));
+      } catch {
+        return account.negocios === negocio.id;
+      }
+    }
+    return false;
+  });
+  const authorizedMeseros = negocioMeseroUsers
+    .filter(account => authorizedMeseroIds.map(String).includes(String(account.id)))
+    .map(account => {
+      const staffMatch = staffActivo.find(person =>
+        person.rol === 'mesero'
+        && String(person.name || '').trim().toLocaleLowerCase('es') === String(account.name || '').trim().toLocaleLowerCase('es')
+      );
+      return { id: account.id, name: String(account.name || 'Mesero'), rol: 'mesero', pay: staffMatch?.pay ?? `${pctMeseros}%`, activo: true };
+    });
   const barman         = staffActivo.find(s=>s.rol==='barra'&&s.activo);
   const dj             = staffActivo.find(s=>s.rol==='dj'&&s.activo);
-  const meseros        = staffActivo.filter(s=>s.rol==='mesero'&&s.activo);
+  const meseros        = authorizedMeseros;
   const pagoFijosStaff = staffActivo.filter(s=>['patin','seguridad','aseo','barra_fija','mesero_fijo'].includes(s.rol)&&s.activo);
-  const totalBancos        = bancosTransfs.reduce((s,t)=>s+(t.monto||0),0);
+  const totalBancos        = bancosTransfs.reduce((s,t)=>s+(Number(t.monto)||0),0);
   const totalGastosT       = gastosT.reduce((s,g)=>s+g.monto,0);
   const totalBilletes      = BILLETS.reduce((s,b)=>s+(parseInt(billetes[b])||0)*b,0);
   const totalVentaProductos= negocio.productos.reduce((s,p)=>{const m=movs[p.id]||{};return s+(m.ventaManual!==undefined?m.ventaManual:Math.max(0,(m.salidas||0)-(m.cortesia||0))*p.price);},0);
@@ -240,10 +516,104 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
   const totalPersonal      = pagoBarra+pagoDJ+totalMeserosFinal+pagoFijosTotal;
   const neto               = totalVentas-totalBancos+(parseInt(extras)||0)-totalGastosT-totalPersonal-(parseInt(pendientes)||0);
 
+  const handleBankReceipt = async event => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    setBankTransferError('');
+    setBankTransferMessage('');
+    try {
+      const comprobante = await preparePhoto(file);
+      setBForm(current => ({ ...current, comprobante }));
+    } catch (error) {
+      setBankTransferError(error.message || 'No fue posible preparar el comprobante.');
+    }
+  };
+
+  const registerBankTransfer = async () => {
+    const monto = Number(bForm.monto);
+    const mesero = authorizedMeseros.find(person => String(person.id) === String(bForm.meseroId || authorizedMeseros[0]?.id));
+    if (bankTransfersLoading) {
+      setBankTransferError('Espera a que termine la carga de las transferencias del turno.');
+      return;
+    }
+    if (!turnoId || !mesero || !Number.isSafeInteger(monto) || monto <= 0 || !bForm.comprobante || savingTransfer) {
+      setBankTransferError('Selecciona un mesero activo, una foto y un monto válido mayor que cero.');
+      return;
+    }
+    setSavingTransfer(true);
+    setBankTransferError('');
+    setBankTransferMessage('');
+    const transfer = {
+      id: uid(),
+      negocio_id: negocio.id,
+      turno_id: turnoId,
+      mesero_id: mesero.id,
+      plataforma: bForm.plataforma,
+      monto,
+      foto_url: bForm.comprobante,
+      descripcion: bForm.ref.trim() || null,
+      verificada: false,
+    };
+    const saveResult = await localInsertDetailed('transferencias', transfer);
+    if (!saveResult.ok) {
+      const cause = saveResult.error;
+      const isOldSchema = /(?:no such column:\s*|has no column named\s+)(turno_id|mesero_id)/i.test(cause);
+      const isTooLarge = /too large|payload|entity too large|request entity/i.test(cause);
+      setBankTransferError(isOldSchema
+        ? 'La base del servidor aún no tiene las columnas requeridas. Reinicia el backend para aplicar la migración y vuelve a intentarlo.'
+        : isTooLarge
+          ? 'El comprobante supera el tamaño permitido por el servidor. Selecciona una imagen más pequeña.'
+          : `No fue posible guardar la transferencia: ${cause}`);
+      setSavingTransfer(false);
+      return;
+    }
+    setBancosTransfs(current => [...current, {
+      ...transfer,
+      ref: transfer.descripcion || '',
+      hora: NOW_TIME(),
+      created_at: new Date().toISOString(),
+    }]);
+    setBForm(current => ({ ...current, monto: '', ref: '', comprobante: '' }));
+    setBankTransferMessage('Transferencia y comprobante guardados en este turno.');
+    setSavingTransfer(false);
+  };
+
+  const removeBankTransfer = async transfer => {
+    if (!window.confirm('¿Eliminar esta transferencia y su comprobante del turno?')) return;
+    if (String(transfer.id).startsWith('_')) {
+      setBancosTransfs(current => current.filter(item => item.id !== transfer.id));
+      return;
+    }
+    const deleted = await localDelete('transferencias', { id: transfer.id });
+    if (!deleted) {
+      setBankTransferError('No fue posible eliminar la transferencia guardada.');
+      return;
+    }
+    setBancosTransfs(current => current.filter(item => item.id !== transfer.id));
+  };
+
+  const updateBankTransferPlatform = async (transfer, plataforma) => {
+    if (transfer.plataforma === plataforma) return;
+    if (String(transfer.id).startsWith('_')) {
+      setBancosTransfs(current => current.map(item => item.id === transfer.id ? { ...item, plataforma } : item));
+      return;
+    }
+    const updated = await localUpdate('transferencias', { id: transfer.id }, { plataforma });
+    if (!updated) {
+      setBankTransferError('No fue posible actualizar el banco de la transferencia.');
+      return;
+    }
+    setBancosTransfs(current => current.map(item => item.id === transfer.id ? { ...item, plataforma } : item));
+  };
+
   const resetTurno = () => {
-    setStep('inicio');setTurnoId('');setMovs({});setGastosT([]);setBancosTransfs([]);
+    setStep('inicio');setTurnoId('');setTurnoAbierto(null);setMovs({});setGastosT([]);setBancosTransfs([]);
+    setBForm({plataforma:'nequi',monto:'',ref:'',meseroId:'',comprobante:''});
+    setTransferLinkError('');setBankTransferError('');setBankTransferMessage('');
     setExtras('');setPendientes('');setNovedades('');setVentasMesero({});setBilletes({});setResumen(null);setChecklist({});
     setStaffActivo(negocio.staff.map(s=>({...s,activo:true})));
+    setAuthorizedMeseroIds([]);
     localStorage.removeItem(TURNO_KEY);
   };
 
@@ -254,9 +624,8 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
       return;
     }
     const id = uid();
-    const activos = staffActivo.filter(person => person.activo);
+    const activos = staffActivo.filter(person => person.activo && person.rol !== 'mesero');
     const barra = activos.find(person => person.rol === 'barra');
-    const meserosTurno = activos.filter(person => person.rol === 'mesero');
     const inventarioApertura = negocio.productos.map(product => ({
       producto_id: product.id,
       nombre: product.name,
@@ -271,7 +640,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
       inventario_apertura: inventarioApertura,
       abierto_por: user?.id || null,
       barra_id: barra?.id || null,
-      meseros_ids: meserosTurno.map(person => person.id),
+      meseros_ids: [],
       novedades_apertura: novedadesApert.trim() || null,
     });
     if (!created) {
@@ -289,8 +658,12 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
       creado_por: user?.id || null,
     }));
     if (movements.length) await localInsert('movimientos_inventario', movements);
+    setBancosTransfs([]);
+    setBForm({plataforma:'nequi',monto:'',ref:'',meseroId:'',comprobante:''});
+    setBankTransferError('');setBankTransferMessage('');
     setTurnoId(id);
     setTurnoAbierto({ id, base_caja: Number(baseCaja) || 0 });
+    setAuthorizedMeseroIds([]);
     setChecklist(checkItems);
     if(novedadesApert) setNovedades(novedadesApert);
     setApertura(NOW_TIME());
@@ -301,15 +674,29 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
     setShowChecklist(false);
   };
 
-  const cerrarTurno = () => {
+  const cerrarTurno = async () => {
+    if (savingTransfer) {
+      setBankTransferError('Espera a que termine el guardado de la transferencia antes de cerrar la planilla.');
+      setTab('bancos');
+      return;
+    }
     const personalDetalle=[...pagoMeseros.filter(m=>m.pago>0).map(m=>({name:m.name,rol:'mesero',pago:m.pago})),...(barman?[{name:barman.name,rol:'barra',pago:pagoBarra}]:[]),...(dj?[{name:dj.name,rol:'dj',pago:pagoDJ}]:[]),...pagoFijosStaff.map(s=>({name:s.name,rol:s.rol,pago:typeof s.pay==='number'?s.pay:0}))];
     const movsList=negocio.productos.filter(p=>movs[p.id]&&(movs[p.id].salidas||movs[p.id].entradas||movs[p.id].cortesia||movs[p.id].existencias!==undefined)).map(p=>{const m=movs[p.id]||{};const vendidas=Math.max(0,(m.salidas||0)-(m.cortesia||0));const finalStock=m.existencias!==undefined?m.existencias:p.stock+(m.entradas||0)-(m.salidas||0)-(m.cortesia||0);const total=m.ventaManual!==undefined?m.ventaManual:vendidas*p.price;return{name:p.name,inicio:p.stock,entradas:m.entradas||0,salidas:m.salidas||0,cortesia:m.cortesia||0,final:finalStock,total,precio:p.price,...(m.ventaManual!==undefined?{ventaManual:m.ventaManual}:{})};});
     const gastosDetalle=gastosT.filter(g=>g.monto>0).map(g=>({desc:g.desc,monto:g.monto}));
-    const bancoDetalle={};bancosTransfs.forEach(t=>{bancoDetalle[t.plataforma]=(bancoDetalle[t.plataforma]||0)+t.monto;});
-    const r={id:uid(),fecha:new Date().toISOString().slice(0,10),apertura,cierre:NOW_TIME(),ventas:totalVentas,bancos:totalBancos,bancoDetalle,gastos:totalGastosT,extras:parseInt(extras)||0,pendientes:parseInt(pendientes)||0,personal:totalPersonal,personalDetalle,gastosDetalle,neto,arqueo:{total:totalBilletes},novedades,movimientos:movsList};
+    const bancoDetalle={};bancosTransfs.forEach(t=>{bancoDetalle[t.plataforma]=(bancoDetalle[t.plataforma]||0)+(Number(t.monto)||0);});
+    const r={id:uid(),fecha:formatLocalDateKey(new Date()),apertura,cierre:NOW_TIME(),ventas:totalVentas,bancos:totalBancos,bancoDetalle,gastos:totalGastosT,extras:parseInt(extras)||0,pendientes:parseInt(pendientes)||0,personal:totalPersonal,personalDetalle,gastosDetalle,neto,arqueo:{total:totalBilletes},novedades,movimientos:movsList};
     r.diferencia=totalBilletes-neto;
     const newProds=negocio.productos.map(p=>{const m=movs[p.id];if(!m)return p;if(m.existencias!==undefined)return{...p,stock:Math.max(0,m.existencias)};return{...p,stock:Math.max(0,p.stock+(m.entradas||0)-(m.salidas||0)-(m.cortesia||0))};});
-    onUpdateNegocio({...negocio,productos:newProds,planillas:[r,...negocio.planillas]});
+    await onUpdateNegocio({...negocio,productos:newProds,planillas:[r,...negocio.planillas]});
+    setTransferLinkError('');
+    const transfersToLink = bancosTransfs.filter(transfer => !String(transfer.id).startsWith('_'));
+    const linkedTransfers = await Promise.all(transfersToLink.map(transfer =>
+      localUpdate('transferencias', { id: transfer.id }, { planilla_id: r.id })
+    ));
+    if (linkedTransfers.some(linked => !linked)) {
+      console.error('La planilla cerró, pero algunos comprobantes bancarios no pudieron asociarse a su cierre.');
+      setTransferLinkError('La planilla se cerró, pero no fue posible asociar todos los comprobantes bancarios al cierre. Revisa la conexión y contacta al gerente.');
+    }
     if (turnoId) {
       localUpdate('turnos', { id: turnoId }, {
         estado: 'cerrado',
@@ -351,32 +738,18 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
             <div style={{fontSize:12,color:C.sub,marginBottom:12}}>Solo se muestran las comandas del turno correspondiente a la planilla {viewPlanilla.fecha}.</div>
             <ComandaMeseroFilter meseros={viewMeseros} comandas={viewComandas} selected={viewMeseroFilter} onChange={setViewMeseroFilter}/>
             {comandasLoading&&<div style={{color:C.sub,fontSize:12}}>Cargando comandas...</div>}
-            {!comandasLoading&&!viewComandas.length&&<div style={{color:C.sub,fontSize:12}}>No hubo comandas registradas en este turno.</div>}
-            {!comandasLoading&&viewComandas.length>0&&!viewComandasVisibles.length&&<div style={{color:C.sub,fontSize:12}}>No hay comandas de este mesero.</div>}
-            {viewComandasVisibles.map(comanda=>{
-              const status=COMANDA_STATUS[comanda.estado]||[comanda.estado,C.sub];
-              return <div key={comanda.id} style={{borderTop:`1px solid ${C.border}50`,padding:'10px 0'}}>
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-                  <div>
-                    <strong>Comanda #{comanda.consecutivo||'—'}</strong>
-                    <div style={{fontSize:11,color:C.sub}}>Mesero: {comanda.mesero_nombre||comanda.mesero_id} · Total: {COP(comanda.total)}</div>
-                  </div>
-                  <Badge color={status[1]} small>{status[0]}</Badge>
-                </div>
-                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:5,marginTop:8,fontSize:11,color:C.sub}}>
-                  <span>Creada: {formatComandaTime(comanda.creado_en)}</span>
-                  <span>Autorizada: {formatComandaTime(comanda.confirmado_en)}</span>
-                  <span>Entregada: {formatComandaTime(comanda.despachado_en)}</span>
-                  <span>Pago: {formatComandaTime(comanda.pagado_en||comanda.pago_registrado_en)}</span>
-                </div>
-                <div style={{marginTop:7,padding:'7px 9px',background:C.surface,borderRadius:7}}>
-                  {(viewComandaItems[comanda.id]||[]).map(item=><div key={item.id} style={{display:'flex',justifyContent:'space-between',fontSize:11,padding:'3px 0'}}>
-                    <span>{item.cantidad} × {item.nombre}</span>
-                    <strong style={{color:C.green}}>{COP(Number(item.cantidad)*Number(item.precio_unitario))}</strong>
-                  </div>)}
-                </div>
-              </div>;
-            })}
+            {comandasError&&<div role="alert" style={{color:C.red,fontSize:12,padding:'10px 12px',borderRadius:8,background:`${C.red}12`}}>{comandasError}</div>}
+            {!comandasError&&<PlanillaComandaTabs
+              comandas={viewComandasVisibles}
+              itemsByOrder={viewComandaItems}
+              activeStatus={viewActiveStatus}
+              onStatusChange={setViewActiveStatus}
+            />}
+          </div>
+          <div style={{...s.card,marginTop:'1rem'}}>
+            <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>🏦 Transferencias y comprobantes</div>
+            {bankHistoryError&&<div role="alert" style={{color:C.red,fontSize:12,marginBottom:10}}>{bankHistoryError}</div>}
+            <BankTransferHistory transfers={planillaBankTransfers} users={users}/>
           </div>
         </div>
       ) : (
@@ -409,6 +782,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
           <button style={s.btn()} onClick={()=>printPlanilla(resumen,negocio.name)}>🖨 PDF</button>
           <button style={s.btn('primary')} onClick={resetTurno}>Nuevo Turno</button>
         </div>
+        {transferLinkError&&<div role="alert" style={{...s.card,color:C.red,borderColor:`${C.red}50`,marginBottom:'1rem'}}>{transferLinkError}</div>}
         <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,marginBottom:'1.25rem'}}>
           <Metric label="Ventas"     value={COP(resumen.ventas)}        color={C.green}/>
           <Metric label="Bancos"     value={COP(resumen.bancos)}        color={C.indigo}/>
@@ -422,23 +796,48 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
 
   // ── Turno inicio ────────────────────────────────────────────────────────────
   if (step==='inicio') {
-    const getWeekKey = fechaStr => {
-      let d;
-      if(fechaStr.includes('-')) d=new Date(fechaStr);
-      else { const [dd,mm,yyyy]=fechaStr.split('/'); d=new Date(`${yyyy}-${mm}-${dd}`); }
-      if(isNaN(d)) return fechaStr;
-      const day=d.getDay();const diffLun=(day===0)?-6:1-day;
-      const lun=new Date(d); lun.setDate(d.getDate()+diffLun);
-      const dom=new Date(lun); dom.setDate(lun.getDate()+6);
-      const fmt=x=>`${String(x.getDate()).padStart(2,'0')}/${String(x.getMonth()+1).padStart(2,'0')}`;
-      return `${fmt(lun)} – ${fmt(dom)} ${dom.getFullYear()}`;
+    const historyPageSize = 10;
+    const closedPlanillas = negocio.planillas || [];
+    const normalizedSearch = historySearch.trim().toLocaleLowerCase('es');
+    const filteredClosedPlanillas = [...closedPlanillas]
+      .filter(planilla => {
+        const dateKey = planillaDateKey(planilla.fecha);
+        const searchable = `${planilla.fecha || ''} ${planilla.apertura || ''} ${planilla.cierre || ''}`.toLocaleLowerCase('es');
+        return (!normalizedSearch || searchable.includes(normalizedSearch))
+          && (!historyFrom || (dateKey && dateKey >= historyFrom))
+          && (!historyTo || (dateKey && dateKey <= historyTo));
+      })
+      .sort((first, second) => (planillaDateKey(second.fecha) || '').localeCompare(planillaDateKey(first.fecha) || ''));
+    const historyPageCount = Math.max(1, Math.ceil(filteredClosedPlanillas.length / historyPageSize));
+    const visibleClosedPlanillas = filteredClosedPlanillas.slice(
+      historyPage * historyPageSize,
+      (historyPage + 1) * historyPageSize
+    );
+    const clearHistoryFilters = () => {
+      setHistorySearch('');
+      setHistoryFrom('');
+      setHistoryTo('');
+      setHistoryPage(0);
     };
     return(
-      <div>
-        <SectionTitle>Planillas de Turno</SectionTitle>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'1.25rem'}}>
-          <div style={s.card}>
-            <div style={{fontWeight:700,marginBottom:'1rem',fontSize:14}}>Abrir Turno</div>
+      <div className="planilla-home">
+        <header className="planilla-home__hero">
+          <div>
+            <span>CONTROL DE TURNOS</span>
+            <h1>Planillas</h1>
+            <p>Prepara un nuevo turno o consulta cierres anteriores de {negocio.name}.</p>
+          </div>
+          <div className="planilla-home__hero-stat">
+            <strong>{closedPlanillas.length}</strong>
+            <span>turnos cerrados</span>
+          </div>
+        </header>
+        <div className="planilla-home__grid">
+          <div className="planilla-open-card">
+            <div className="planilla-home__card-heading">
+              <span className="planilla-home__icon">＋</span>
+              <div><h2>Abrir turno</h2><p>Configura la caja y el equipo de trabajo.</p></div>
+            </div>
             <div style={{marginBottom:12}}><div style={s.label}>Base de Caja (COP)</div><input style={s.inp} type="number" value={baseCaja} onChange={e=>setBaseCaja(e.target.value)}/></div>
             <div style={{marginBottom:12}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
@@ -468,50 +867,47 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
                   </div>
                 ))}
               </div>
-              <div style={{fontSize:11,color:C.sub,marginTop:5}}>{staffActivo.filter(s=>s.activo).length}/{staffActivo.length} en turno</div>
+              <div style={{fontSize:11,color:C.sub,marginTop:5}}>{staffActivo.filter(person=>person.activo).length}/{staffActivo.length} personas seleccionadas</div>
             </div>
-            <button style={{...s.btn('primary'),width:'100%',padding:10}} onClick={()=>setShowChecklist(true)}>Abrir Turno</button>
+            <button className="planilla-open-button" type="button" onClick={()=>setShowChecklist(true)}>Abrir turno <span>→</span></button>
           </div>
-          <div style={s.card}>
-            <div style={{fontWeight:700,marginBottom:'1rem',fontSize:14,display:'flex',justifyContent:'space-between'}}>
-              <span>Planillas Cerradas</span><Badge color={C.green} small>{negocio.planillas.length}</Badge>
+          <div className="planilla-history-card">
+            <div className="planilla-history-card__heading">
+              <div className="planilla-home__card-heading">
+                <span className="planilla-home__icon planilla-home__icon--history">▤</span>
+                <div><h2>Turnos cerrados</h2><p>Consulta resultados y abre el detalle del cierre.</p></div>
+              </div>
+              <Badge color={C.green} small>{filteredClosedPlanillas.length} registros</Badge>
             </div>
-            {negocio.planillas.length===0?<div style={{color:C.sub,fontSize:13}}>Sin planillas registradas.</div>:(()=>{
-              const grupos={};
-              [...negocio.planillas].sort((a,b)=>a.fecha.localeCompare(b.fecha)).forEach(p=>{
-                const k=getWeekKey(p.fecha);
-                if(!grupos[k]) grupos[k]=[];
-                grupos[k].push(p);
-              });
-              return Object.entries(grupos).map(([semana,planillas])=>(
-                <details key={semana} open style={{marginBottom:'0.75rem'}}>
-                  <summary style={{cursor:'pointer',padding:'6px 8px',borderRadius:8,background:negocio.color+'18',border:`1px solid ${negocio.color}30`,fontWeight:700,fontSize:12,color:negocio.color,listStyle:'none',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                    <span>📅 Semana {semana}</span>
-                    <div style={{display:'flex',gap:8,alignItems:'center'}}>
-                      <span style={{color:C.green,fontWeight:700,fontSize:11}}>{COP(planillas.reduce((s,p)=>s+p.ventas,0))}</span>
-                      <Badge color={negocio.color} small>{planillas.length} turnos</Badge>
-                    </div>
-                  </summary>
-                  <div style={{paddingTop:6}}>
-                    {planillas.map(p=>(
-                      <div key={p.id} style={{padding:'8px 4px',borderBottom:`1px solid ${C.border}40`}}>
-                        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                          <span style={{fontWeight:600,fontSize:13}}>{p.fecha} <span style={{color:C.sub,fontWeight:400,fontSize:11}}>{p.apertura}–{p.cierre}</span></span>
-                          <div style={{display:'flex',gap:5}}>
-                            <button className="planilla-view-button" onClick={()=>setViewPlanilla(p)}>🧾 Ver detalle</button>
-                            <button style={{...s.btn(),padding:'2px 10px',fontSize:11}} onClick={()=>printPlanilla(p,negocio.name)}>🖨</button>
-                          </div>
-                        </div>
-                        <div style={{display:'flex',gap:14,marginTop:4,fontSize:12,color:C.sub}}>
-                          <span>Ventas: <strong style={{color:C.green}}>{COP(p.ventas)}</strong></span>
-                          <span>Neto: <strong style={{color:p.neto>=0?C.amber:C.red}}>{COP(p.neto)}</strong></span>
-                        </div>
-                      </div>
-                    ))}
+            <div className="planilla-history-filters">
+              <label className="planilla-history-search"><span aria-hidden="true">⌕</span><input aria-label="Buscar planillas por fecha u horario" placeholder="Buscar fecha u horario..." value={historySearch} onChange={event=>{setHistorySearch(event.target.value);setHistoryPage(0);}}/></label>
+              <label><span>Desde</span><input type="date" aria-label="Filtrar planillas desde la fecha" value={historyFrom} onChange={event=>{setHistoryFrom(event.target.value);setHistoryPage(0);}}/></label>
+              <label><span>Hasta</span><input type="date" aria-label="Filtrar planillas hasta la fecha" value={historyTo} onChange={event=>{setHistoryTo(event.target.value);setHistoryPage(0);}}/></label>
+              {(historySearch||historyFrom||historyTo)&&<button type="button" onClick={clearHistoryFilters}>Limpiar</button>}
+            </div>
+            <div className="planilla-history-limit">Mostrando hasta 10 cierres por página · {filteredClosedPlanillas.length} resultados</div>
+            {visibleClosedPlanillas.length===0
+              ? <div className="planilla-history-empty">{closedPlanillas.length?'No hay cierres que coincidan con los filtros.':'Aún no hay planillas cerradas.'}</div>
+              : <div className="planilla-history-list">{visibleClosedPlanillas.map(planilla=>(
+                <article key={planilla.id} className="planilla-history-row">
+                  <div className="planilla-history-row__date">
+                    <span>FECHA DEL TURNO</span>
+                    <strong>{planilla.fecha}</strong>
+                    <small>{planilla.apertura||'—'}–{planilla.cierre||'—'}</small>
                   </div>
-                </details>
-              ));
-            })()}
+                  <div className="planilla-history-row__metric"><span>Ventas</span><strong>{COP(planilla.ventas)}</strong></div>
+                  <div className="planilla-history-row__metric"><span>Neto</span><strong className={planilla.neto>=0?'is-positive':'is-negative'}>{COP(planilla.neto)}</strong></div>
+                  <div className="planilla-history-row__actions">
+                    <button className="planilla-view-button" type="button" onClick={()=>setViewPlanilla(planilla)}>Ver detalle</button>
+                    <button className="planilla-history-print" type="button" aria-label={`Descargar PDF de la planilla ${planilla.fecha}`} title="Descargar PDF" onClick={()=>printPlanilla(planilla,negocio.name)}>PDF</button>
+                  </div>
+                </article>
+              ))}</div>}
+            {historyPageCount>1&&<div className="planilla-history-pagination">
+              <button type="button" onClick={()=>setHistoryPage(page=>Math.max(0,page-1))} disabled={historyPage===0}>← Anterior</button>
+              <span>Página {historyPage+1} de {historyPageCount}</span>
+              <button type="button" onClick={()=>setHistoryPage(page=>Math.min(historyPageCount-1,page+1))} disabled={historyPage>=historyPageCount-1}>Siguiente →</button>
+            </div>}
           </div>
         </div>
 
@@ -535,23 +931,18 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
               <div style={{fontSize:12,color:C.sub,marginBottom:12}}>Solo se muestran las comandas del turno correspondiente a la planilla {viewPlanilla.fecha}.</div>
               <ComandaMeseroFilter meseros={viewMeseros} comandas={viewComandas} selected={viewMeseroFilter} onChange={setViewMeseroFilter}/>
               {comandasLoading&&<div style={{color:C.sub,fontSize:12}}>Cargando comandas...</div>}
-              {!comandasLoading&&!viewComandas.length&&<div style={{color:C.sub,fontSize:12}}>No hubo comandas registradas en este turno.</div>}
-              {!comandasLoading&&viewComandas.length>0&&!viewComandasVisibles.length&&<div style={{color:C.sub,fontSize:12}}>No hay comandas de este mesero.</div>}
-              {viewComandasVisibles.map(comanda=>{
-                const status=COMANDA_STATUS[comanda.estado]||[comanda.estado,C.sub];
-                return <div key={comanda.id} style={{borderTop:`1px solid ${C.border}50`,padding:'10px 0'}}>
-                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-                    <div><strong>Comanda #{comanda.consecutivo||'—'}</strong><div style={{fontSize:11,color:C.sub}}>Mesero: {comanda.mesero_nombre||comanda.mesero_id} · Total: {COP(comanda.total)}</div></div>
-                    <Badge color={status[1]} small>{status[0]}</Badge>
-                  </div>
-                  <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:5,marginTop:8,fontSize:11,color:C.sub}}>
-                    <span>Creada: {formatComandaTime(comanda.creado_en)}</span><span>Autorizada: {formatComandaTime(comanda.confirmado_en)}</span><span>Entregada: {formatComandaTime(comanda.despachado_en)}</span><span>Pago: {formatComandaTime(comanda.pagado_en||comanda.pago_registrado_en)}</span>
-                  </div>
-                  <div style={{marginTop:7,padding:'7px 9px',background:C.surface,borderRadius:7}}>
-                    {(viewComandaItems[comanda.id]||[]).map(item=><div key={item.id} style={{display:'flex',justifyContent:'space-between',fontSize:11,padding:'3px 0'}}><span>{item.cantidad} × {item.nombre}</span><strong style={{color:C.green}}>{COP(Number(item.cantidad)*Number(item.precio_unitario))}</strong></div>)}
-                  </div>
-                </div>;
-              })}
+              {comandasError&&<div role="alert" style={{color:C.red,fontSize:12,padding:'10px 12px',borderRadius:8,background:`${C.red}12`}}>{comandasError}</div>}
+              {!comandasError&&<PlanillaComandaTabs
+                comandas={viewComandasVisibles}
+                itemsByOrder={viewComandaItems}
+                activeStatus={viewActiveStatus}
+                onStatusChange={setViewActiveStatus}
+              />}
+            </div>
+            <div style={{marginTop:'1rem',paddingTop:'1rem',borderTop:`1px solid ${C.border}50`}}>
+              <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>🏦 Transferencias y comprobantes</div>
+              {bankHistoryError&&<div role="alert" style={{color:C.red,fontSize:12,marginBottom:10}}>{bankHistoryError}</div>}
+              <BankTransferHistory transfers={planillaBankTransfers} users={users}/>
             </div>
           </div>
         )}
@@ -702,8 +1093,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
       {tab==='ventas'&&(
         <div style={s.card}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0.5rem'}}>
-            <div style={{fontWeight:700,fontSize:13}}>Personal del Turno — Comisiones</div>
-            <button style={{...s.btn(),padding:'4px 12px',fontSize:12,color:C.green,border:`1px solid ${C.green}40`}} onClick={()=>setShowNuevoStaff(true)}>+ Personal</button>
+            <div style={{fontWeight:700,fontSize:13}}>Meseros autorizados — Comisiones</div>
           </div>
           <div style={{display:'flex',gap:16,alignItems:'center',marginBottom:'0.75rem',padding:'8px 12px',background:C.surface,borderRadius:8,border:`1px solid ${C.border}`,flexWrap:'wrap'}}>
             <span style={{fontSize:11,color:C.sub,fontWeight:600}}>Comisiones:</span>
@@ -723,7 +1113,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
             La barra cobra <strong style={{color:C.amber}}>{pctBarra}% del total de ventas</strong>: {COP(totalVentas)}.
           </div>
           <table style={{width:'100%',borderCollapse:'collapse',marginBottom:'1rem'}}>
-            <thead><tr style={{background:C.surface}}>{['Mesero','Ventas del turno',`Comisión ${pctMeseros}%`,'Entrega en caja',''].map(h=><th key={h} style={s.th}>{h}</th>)}</tr></thead>
+            <thead><tr style={{background:C.surface}}>{['Mesero autorizado','Ventas del turno',`Comisión ${pctMeseros}%`,'Entrega en caja'].map(h=><th key={h} style={s.th}>{h}</th>)}</tr></thead>
             <tbody>
               {meseros.map((m,i)=>{
                 const v=parseInt(ventasMesero[m.id])||0;const comision=r1000(v*(pctMeseros/100));const entrega=v-comision;
@@ -733,7 +1123,6 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
                     <td style={s.td(i)}><input style={{...s.inp,maxWidth:180,border:`1px solid ${v>0?C.green:C.border}`,color:v>0?C.green:C.text,fontWeight:v>0?700:400}} type="number" placeholder="0" value={ventasMesero[m.id]||''} onChange={e=>setVentasMesero(p=>({...p,[m.id]:e.target.value}))}/></td>
                     <td style={{...s.td(i),color:C.red,fontWeight:v>0?700:400}}>{v>0?`− ${COP(comision)}`:'—'}</td>
                     <td style={{...s.td(i),color:v>0?C.amber:C.sub,fontWeight:v>0?700:400}}>{v>0?COP(entrega):'—'}</td>
-                    <td style={s.td(i)}><button onClick={()=>setStaffActivo(p=>p.map(x=>x.id===m.id?{...x,activo:false}:x))} style={{background:'none',border:'none',cursor:'pointer',color:C.muted,fontSize:15,padding:'0 4px',lineHeight:1}} title="Quitar del turno">✕</button></td>
                   </tr>
                 );
               })}
@@ -743,12 +1132,11 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
                   <td style={{...s.td(0),color:C.green,fontWeight:800}}>{COP(totalVentasMeseros)}</td>
                   <td style={{...s.td(0),color:C.red,fontWeight:700}}>− {COP(totalMeserosFinal)}</td>
                   <td style={{...s.td(0),color:C.amber,fontWeight:800}}>{COP(totalVentasMeseros-totalMeserosFinal)}</td>
-                  <td style={s.td(0)}/>
                 </tr>
               )}
             </tbody>
           </table>
-          {meseros.length===0&&<div style={{color:C.sub,fontSize:12,padding:'1rem',textAlign:'center'}}>No hay meseros activos en este turno.</div>}
+          {meseros.length===0&&<div style={{color:C.sub,fontSize:12,padding:'1rem',textAlign:'center'}}>No hay meseros autorizados en este turno. Selecciónalos antes de abrir la planilla.</div>}
           <div style={{borderTop:`1px solid ${C.border}`,paddingTop:'1rem',display:'flex',flexDirection:'column',gap:8}}>
             <div style={{fontSize:11,color:C.sub,textTransform:'uppercase',fontWeight:600,letterSpacing:'0.05em',marginBottom:4}}>Otros pagos de personal</div>
             {barman&&<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 10px',background:C.surface,borderRadius:8}}><div><span style={{fontWeight:600}}>{barman.name}</span><span style={{color:C.sub,marginLeft:8,fontSize:11}}>Barra {pctBarra}%</span></div><div style={{display:'flex',alignItems:'center',gap:8}}><span style={{color:C.red,fontWeight:700}}>− {COP(pagoBarra)}</span><button onClick={()=>setStaffActivo(p=>p.map(x=>x.id===barman.id?{...x,activo:false}:x))} style={{background:'none',border:'none',cursor:'pointer',color:C.muted,fontSize:15,padding:'0 4px',lineHeight:1}} title="Quitar del turno">✕</button></div></div>}
@@ -800,31 +1188,37 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
 
       {tab==='bancos'&&(
         <div style={{display:'flex',flexDirection:'column',gap:'1rem'}}>
-
-          {/* ── Registrar transferencia ─────────────────────────────────── */}
           <div style={s.card}>
-            <div style={{fontWeight:700,fontSize:13,marginBottom:'0.75rem'}}>Registrar Transferencia</div>
-            <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginBottom:'0.75rem'}}>
-              <select style={{...s.sel,flex:'0 0 135px'}} value={bForm.plataforma} onChange={e=>setBForm(p=>({...p,plataforma:e.target.value}))}>
-                {Object.entries(PLAT_LABELS).map(([k,l])=><option key={k} value={k}>{l}</option>)}
+            <div style={{fontWeight:700,fontSize:13,marginBottom:'0.75rem'}}>Registrar transferencia con comprobante</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:10,alignItems:'center'}}>
+              <select style={s.sel} value={bForm.meseroId || authorizedMeseros[0]?.id || ''} onChange={e=>setBForm(p=>({...p,meseroId:e.target.value}))}>
+                <option value="">Selecciona un mesero activo</option>
+                {authorizedMeseros.map(person=><option key={person.id} value={person.id}>{person.name}</option>)}
               </select>
-              <input style={{...s.inp,flex:'0 0 150px'}} type="number" placeholder="Monto"
+              <select style={s.sel} value={bForm.plataforma} onChange={e=>setBForm(p=>({...p,plataforma:e.target.value}))}>
+                {Object.entries(PLAT_LABELS).map(([k,l])=><option key={k} value={k}>{l}</option>)}
+                <option value="otro">Otro</option>
+              </select>
+              <input style={s.inp} type="number" min="1" step="1" placeholder="Monto transferido ($)"
                 value={bForm.monto} onChange={e=>setBForm(p=>({...p,monto:e.target.value}))}/>
-              <input style={{...s.inp,flex:1,minWidth:130}} placeholder="Referencia (ej: Juan García, #Ref1234)"
-                value={bForm.ref} onChange={e=>setBForm(p=>({...p,ref:e.target.value}))}
-                onKeyDown={e=>{if(e.key==='Enter'&&bForm.monto){setBancosTransfs(p=>[...p,{id:uid(),plataforma:bForm.plataforma,monto:parseInt(bForm.monto)||0,ref:bForm.ref,hora:NOW_TIME()}]);setBForm(p=>({...p,monto:'',ref:''}));}}}/>
-              <button style={s.btn('primary')} onClick={()=>{
-                if(!bForm.monto) return;
-                setBancosTransfs(p=>[...p,{id:uid(),plataforma:bForm.plataforma,monto:parseInt(bForm.monto)||0,ref:bForm.ref,hora:NOW_TIME()}]);
-                setBForm(p=>({...p,monto:'',ref:''}));
-              }}>+ Agregar</button>
+              <input style={s.inp} placeholder="Referencia (opcional)" value={bForm.ref} onChange={e=>setBForm(p=>({...p,ref:e.target.value}))}/>
+              <label style={{...s.inp,display:'flex',alignItems:'center',cursor:'pointer',gap:8}}>
+                <span>{bForm.comprobante ? 'Comprobante listo' : 'Seleccionar foto del comprobante'}</span>
+                <input type="file" accept="image/*" capture="environment" onChange={handleBankReceipt} style={{display:'none'}}/>
+              </label>
             </div>
+            {bForm.comprobante&&<img src={bForm.comprobante} alt="Vista previa del comprobante" style={{display:'block',maxWidth:220,maxHeight:180,objectFit:'contain',marginTop:10,borderRadius:8}}/>}
+            {!authorizedMeseros.length&&<div role="status" style={{color:C.amber,fontSize:12,marginTop:8}}>Activa al menos un mesero desde el módulo de Barra para registrar transferencias.</div>}
+            <button style={{...s.btn('primary'),marginTop:10}} onClick={registerBankTransfer} disabled={savingTransfer||bankTransfersLoading||!turnoId||!authorizedMeseros.length}>
+              {savingTransfer ? 'Guardando…' : 'Guardar transferencia'}
+            </button>
+            {bankTransferError&&<div role="alert" style={{color:C.red,fontSize:12,marginTop:8}}>{bankTransferError}</div>}
+            {bankTransferMessage&&<div role="status" style={{color:C.green,fontSize:12,marginTop:8}}>{bankTransferMessage}</div>}
+            {bankTransfersLoading&&<div style={{color:C.sub,fontSize:12,marginTop:8}}>Cargando transferencias del turno…</div>}
             <div style={{padding:'7px 10px',background:C.indigo+'12',borderRadius:8,fontSize:11,color:C.sub,border:`1px solid ${C.indigo}30`}}>
-              💡 Registra <strong style={{color:C.indigo}}>cada transferencia por separado</strong> para trazabilidad. Se restan del efectivo de caja.
+              Registra cada transferencia por separado; cada comprobante queda relacionado con el mesero activo y la planilla de este turno.
             </div>
           </div>
-
-          {/* ── Lista de transferencias ─────────────────────────────────── */}
           <div style={s.card}>
             <div style={{fontWeight:700,fontSize:13,marginBottom:'0.75rem',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
               <span>Transferencias del Turno</span>
@@ -832,7 +1226,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
             </div>
             {bancosTransfs.length>0&&(
               <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:'0.75rem'}}>
-                {Object.entries(bancosTransfs.reduce((acc,t)=>{acc[t.plataforma]=(acc[t.plataforma]||0)+t.monto;return acc;},{})).map(([plat,tot])=>(
+                {Object.entries(bancosTransfs.reduce((acc,t)=>{acc[t.plataforma]=(acc[t.plataforma]||0)+(Number(t.monto)||0);return acc;},{})).map(([plat,tot])=>(
                   <div key={plat} style={{padding:'3px 10px',borderRadius:20,background:(PLAT_COLORS[plat]||'#888')+'22',border:`1px solid ${(PLAT_COLORS[plat]||'#888')}40`,fontSize:11,fontWeight:700,color:PLAT_COLORS[plat]||'#888'}}>
                     {PLAT_LABELS[plat]||plat}: {COP(tot)}
                   </div>
@@ -852,11 +1246,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
                       onBlur={()=>setEditingPlatId(null)}
                       onChange={async e=>{
                         const nueva=e.target.value;
-                        setBancosTransfs(p=>p.map(x=>x.id===t.id?{...x,plataforma:nueva}:x));
-                        // Si viene de Supabase (UUID real, no fake _xxx), persistir el cambio
-                        if(!String(t.id).startsWith('_')){
-                          await localUpdate('transferencias',{id:t.id},{plataforma:nueva}).catch(()=>{});
-                        }
+                        await updateBankTransferPlatform(t,nueva);
                         setEditingPlatId(null);
                       }}
                     >
@@ -874,10 +1264,11 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
                       <span style={{fontSize:9,color:C.muted,opacity:0.65}}>✎</span>
                     </button>
                 }
-                <span style={{fontWeight:700,color:C.indigo,flexShrink:0}}>{COP(t.monto)}</span>
+                <span style={{fontWeight:700,color:C.indigo,flexShrink:0}}>{COP(Number(t.monto)||0)}</span>
                 {t.ref&&<span style={{color:C.sub,fontSize:11,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.ref}</span>}
                 {t.hora&&<span style={{color:C.muted,fontSize:10,marginLeft:'auto',flexShrink:0}}>{t.hora}</span>}
-                <button style={{background:'none',border:'none',cursor:'pointer',color:C.muted,padding:'0 4px',fontSize:14,lineHeight:1,flexShrink:0}} onClick={()=>setBancosTransfs(p=>p.filter(x=>x.id!==t.id))}>✕</button>
+                {t.foto_url&&<BankReceiptButton transfer={t} meseroName={users.find(account=>String(account.id)===String(t.mesero_id))?.name || 'Mesero'}/>}
+                <button style={{background:'none',border:'none',cursor:'pointer',color:C.muted,padding:'0 4px',fontSize:14,lineHeight:1,flexShrink:0}} onClick={()=>removeBankTransfer(t)}>✕</button>
               </div>
             ))}
             {bancosTransfs.length>0&&(
@@ -885,15 +1276,6 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
                 <span>Total Bancos</span><span style={{color:C.indigo,fontSize:17}}>{COP(totalBancos)}</span>
               </div>
             )}
-          </div>
-
-          {/* ── Subir comprobante ────────────────────────────────────────────── */}
-          <div style={s.card}>
-            <div style={{fontWeight:700,fontSize:13,marginBottom:'0.75rem'}}>📸 Subir Comprobante</div>
-            <div style={{fontSize:11,color:C.sub,marginBottom:'0.75rem',padding:'7px 10px',background:C.indigo+'15',borderRadius:8,border:`1px solid ${C.indigo}30`}}>
-              📸 Sube una foto del comprobante bancario. La IA detectará la plataforma y el monto automáticamente.
-            </div>
-            <UploadTransfer negocio={negocio} onRegistered={()=>{}}/>
           </div>
         </div>
       )}

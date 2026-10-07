@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { localFetch } from "../lib/localApi.js";
 
-export function useTurnoData(negocioId, meseroId = "") {
+export function useTurnoData(negocioId, meseroId, filterByMesero = false, requireMeseroAuthorization = false) {
   const [turno, setTurno] = useState(null);
   const [comandas, setComandas] = useState([]);
   const [productos, setProductos] = useState([]);
@@ -10,8 +10,16 @@ export function useTurnoData(negocioId, meseroId = "") {
     if (!negocioId) return undefined;
     let active = true;
     let poll;
+    const waiterFilter = filterByMesero
+      ? `&mesero_id=eq.${meseroId || ""}`
+      : meseroId
+        ? `&mesero_id=eq.${meseroId}`
+        : "";
+    setTurno(null);
+    setComandas([]);
+    setProductos([]);
 
-    (async () => {
+    const refreshTurnoData = async () => {
       const turnos = await localFetch(
         "turnos",
         `negocio_id=eq.${negocioId}&estado=eq.abierto&select=*&order=fecha_apertura.desc&limit=1`,
@@ -21,33 +29,40 @@ export function useTurnoData(negocioId, meseroId = "") {
         setTurno(null);
         setComandas([]);
         setProductos([]);
+        poll = window.setTimeout(refreshTurnoData, 1000);
         return;
       }
-      setTurno(turnos[0]);
+      const currentTurno = turnos[0];
+      setTurno(currentTurno);
+      const authorizedWaiters = currentTurno.meseros_ids;
+      if (requireMeseroAuthorization && (
+        !Array.isArray(authorizedWaiters)
+        || !authorizedWaiters.some(id => String(id) === String(meseroId))
+      )) {
+        setComandas([]);
+        setProductos([]);
+        poll = window.setTimeout(refreshTurnoData, 1000);
+        return;
+      }
 
       const [products, rows] = await Promise.all([
-        localFetch("productos", `negocio_id=eq.${negocioId}&select=*&order=name.asc`),
-        localFetch("comandas", `turno_id=eq.${turnos[0].id}${meseroId ? `&mesero_id=eq.${meseroId}` : ""}&select=*&order=creado_en.desc`),
+        localFetch("productos", `negocio_id=eq.${negocioId}&select=*&order=sort_order.asc`),
+        localFetch("comandas", `turno_id=eq.${currentTurno.id}${waiterFilter}&select=*&order=creado_en.desc`),
       ]);
       if (active) {
         setProductos(products || []);
         setComandas(rows || []);
+        poll = window.setTimeout(refreshTurnoData, 1000);
       }
+    };
 
-      poll = window.setInterval(async () => {
-        const latest = await localFetch(
-          "comandas",
-          `turno_id=eq.${turnos[0].id}${meseroId ? `&mesero_id=eq.${meseroId}` : ""}&select=*&order=creado_en.desc`,
-        );
-        if (active && latest) setComandas(latest);
-      }, 3000);
-    })();
+    void refreshTurnoData();
 
     return () => {
       active = false;
-      if (poll) window.clearInterval(poll);
+      if (poll) window.clearTimeout(poll);
     };
-  }, [negocioId, meseroId]);
+  }, [negocioId, meseroId, filterByMesero, requireMeseroAuthorization]);
 
-  return { turno, comandas, setComandas, productos, setProductos };
+  return { turno, setTurno, comandas, setComandas, productos, setProductos };
 }

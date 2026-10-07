@@ -1,15 +1,12 @@
 import { useState, useEffect, createContext, useContext } from "react";
-import { genSalt, hashPwd, localHash, verifyPwd } from "../utils/auth.js";
-import { uid } from "../utils/helpers.js";
-import { can, canSeeNeg } from "../constants/roles.js";
-import { localFetch, localUpsert, localDelete } from "../lib/localApi.js";
+import { can, canSeeNeg, OWNER_EMAIL } from "../constants/roles.js";
+import {
+  createMasterAccount, localCreateUser, localFetch, localLogin, localLogout,
+  localUpdateUser, localDelete,
+} from "../lib/localApi.js";
 
 // ── Constantes de almacenamiento ───────────────────────────────────────────────
 export const SESSION_KEY = 'gesbar_sess_v2';
-export const USERS_KEY   = 'gesbar_users_v2';
-
-// ── Usuarios por defecto — cambiar contraseñas en el primer acceso ─────────────
-const DEFAULT_USERS_PLAIN = [];
 
 // ── Protección brute-force (en memoria, reset al recargar página) ──────────────
 const MAX_ATTEMPTS = 5;
@@ -42,6 +39,19 @@ function clearAttempts(key) {
   loginAttempts.delete(key);
 }
 
+function normalizeAccount(account) {
+  const email = String(account.email || '').trim().toLowerCase();
+  const savedRole = String(account.role || '').toLowerCase();
+  const role = email === OWNER_EMAIL
+    ? 'administrador'
+    : ['admin', 'administrador'].includes(savedRole)
+      ? 'gerente'
+      : savedRole;
+  return {
+    id:account.id, name:account.name, email, role, negocios:account.negocios,
+  };
+}
+
 // ── Contexto ───────────────────────────────────────────────────────────────────
 const AuthCtx = createContext(null);
 export const useAuth = () => useContext(AuthCtx);
@@ -51,134 +61,153 @@ export function AuthProvider({ children }) {
   const [users,       setUsers]       = useState([]);
   const [authLoading, setAuthLoading] = useState(true);
   const [authError,   setAuthError]   = useState('');
+  const [setupRequired, setSetupRequired] = useState(false);
 
   useEffect(() => {
     (async () => {
       try {
-      let storedUsers = await localFetch('usuarios', 'select=*');
-      if (!storedUsers) {
-        setAuthError('No se pudo conectar con el servidor local. Verifica que el celular use la dirección web del equipo servidor.');
+      const licenseStatus = await localFetch('license/status');
+      if (!licenseStatus?.authorized) {
+        setAuthError('Este computador todavía no está autorizado. Solicita y activa una licencia desde el servidor para continuar.');
         return;
       }
-      if (!storedUsers.length) {
-        let legacyUsers = [];
-        const legacyRaw = localStorage.getItem(USERS_KEY);
-        if (legacyRaw) {
-          try { legacyUsers = JSON.parse(legacyRaw); } catch {}
-        }
-        storedUsers = legacyUsers.length ? legacyUsers : await Promise.all(DEFAULT_USERS_PLAIN.map(async u => {
-          const salt = genSalt();
-          const hash = await hashPwd(u.password, salt);
-          return { id:u.id, name:u.name, email:u.email, role:u.role, negocios:u.negocios, passwordHash:hash, passwordHashLocal:localHash(`${salt}${import.meta.env.VITE_APP_PEPPER || 'GESBAR_PROD_2024_X9mK'}${u.password}`), salt };
-        }));
-        const saved = await localUpsert('usuarios', storedUsers.map(u => ({
-          id:u.id, name:u.name, email:u.email, role:u.role, negocios:u.negocios,
-          password_hash:u.passwordHash, salt:u.salt,
-          password_hash_local:u.passwordHashLocal,
-        })));
-        if (!saved) throw new Error('No fue posible crear los usuarios iniciales.');
-      } else {
-        storedUsers = storedUsers.map(u => ({
-          id:u.id, name:u.name, email:u.email, role:u.role, negocios:u.negocios,
-          passwordHash:u.password_hash, salt:u.salt,
-          passwordHashLocal:u.password_hash_local,
-        }));
+      const setupStatus = await localFetch('setup/status');
+      if (!setupStatus) {
+        setAuthError('No fue posible verificar la configuración de la cuenta maestra desde el computador servidor.');
+        return;
       }
-
-      setUsers(storedUsers);
-
-      try {
-        const sess = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
-        if (sess?.expiresAt > Date.now()) {
-          const u = storedUsers.find(x => x.id === sess.userId);
-          if (u) setUser({ id:u.id, name:u.name, email:u.email, role:u.role, negocios:u.negocios });
-        } else {
-          localStorage.removeItem(SESSION_KEY);
-        }
-      } catch {}
-
+      setSetupRequired(setupStatus.required);
+      if (setupStatus.required) {
+        setAuthError('La cuenta maestra debe configurarse desde el computador servidor.');
+        return;
+      }
+      setAuthError('');
+      const savedSession = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+      if (!savedSession?.token || new Date(savedSession.expiresAt).getTime() <= Date.now()) {
+        localStorage.removeItem(SESSION_KEY);
+        return;
+      }
+      const activeSession = await localFetch('auth/session');
+      if (!activeSession?.user) {
+        localStorage.removeItem(SESSION_KEY);
+        return;
+      }
+      const storedUsers = await localFetch('usuarios');
+      if (!Array.isArray(storedUsers)) {
+        throw new Error('La sesión se validó, pero no fue posible cargar las cuentas.');
+      }
+      setUsers(storedUsers.map(normalizeAccount));
+      const account = normalizeAccount(activeSession.user);
+      setUser({ id:account.id, name:account.name, email:account.email, role:account.role, negocios:account.negocios });
+      } catch (error) {
+        console.error('No fue posible restaurar la sesión:', error);
+        setAuthError(error.message || 'No fue posible restaurar la sesión.');
       } finally {
         setAuthLoading(false);
       }
     })();
   }, []);
 
-  const saveUsers = async u => {
-    setUsers(u);
-    const saved = await localUpsert('usuarios', u.map(user => ({
-      id:user.id, name:user.name, email:user.email, role:user.role, negocios:user.negocios,
-      password_hash:user.passwordHash, salt:user.salt,
-      password_hash_local:user.passwordHashLocal,
-    })));
-    if (!saved) throw new Error('No fue posible guardar los usuarios en SQLite.');
-  };
-
   const login = async (email, password) => {
-    if (authError) return { error: authError };
     const bf = checkBruteForce(email);
     if (bf.blocked) return { error: bf.message };
 
-    const normalizedEmail = email.trim().toLowerCase();
-    const u = users.find(x => x.email.trim().toLowerCase() === normalizedEmail);
-    if (!u) {
-      // No revelar si el email existe (timing-safe)
-      return { error: 'Credenciales incorrectas.' };
+    try {
+      const result = await localLogin(email, password);
+      const account = normalizeAccount(result.user);
+      localStorage.setItem(SESSION_KEY, JSON.stringify({
+        token:result.token, userId:account.id, expiresAt:result.expiresAt,
+      }));
+      const storedUsers = await localFetch('usuarios');
+      if (!Array.isArray(storedUsers)) {
+        localStorage.removeItem(SESSION_KEY);
+        return { error:'La sesión inició, pero no fue posible cargar las cuentas. Inténtalo nuevamente.' };
+      }
+      setUsers(storedUsers.map(normalizeAccount));
+      setAuthError('');
+      clearAttempts(bf.key);
+      setUser({ id:account.id, name:account.name, email:account.email, role:account.role, negocios:account.negocios });
+      return { success:true };
+    } catch (error) {
+      if (error?.message?.includes('Credenciales incorrectas')) {
+        return { error:recordFailedAttempt(bf.key, bf.record) };
+      }
+      return { error:error.message || 'No fue posible iniciar sesión.' };
     }
-
-    const ok = await verifyPwd(password, u.salt, u.passwordHash, u.passwordHashLocal);
-    if (!ok) {
-      const msg = recordFailedAttempt(bf.key, bf.record);
-      return { error: msg };
-    }
-
-    clearAttempts(bf.key);
-    localStorage.setItem(SESSION_KEY, JSON.stringify({ userId:u.id, expiresAt:Date.now() + 8*3600000 }));
-    setUser({ id:u.id, name:u.name, email:u.email, role:u.role, negocios:u.negocios });
-    return { success: true };
   };
 
-  const logout = () => { localStorage.removeItem(SESSION_KEY); setUser(null); };
+  const logout = () => {
+    localLogout().catch(error => console.error(error));
+    localStorage.removeItem(SESSION_KEY);
+    setUser(null);
+    setUsers([]);
+  };
 
   const createUser = async ({ name, email, role, negocios, password }) => {
     const normalizedEmail = email.trim().toLowerCase();
+    if (normalizedEmail === OWNER_EMAIL || ['admin', 'administrador'].includes(String(role).toLowerCase())) {
+      return { error:'El administrador maestro es único y no se puede crear desde Gestión de Usuarios.' };
+    }
     if (users.find(u => u.email.trim().toLowerCase() === normalizedEmail)) return { error:'Email ya existe' };
     if (!password || password.length < 8) return { error:'Contraseña mínimo 8 caracteres' };
-    const salt = genSalt();
-    const hash = await hashPwd(password, salt);
-    const localPasswordHash = localHash(`${salt}${import.meta.env.VITE_APP_PEPPER || 'GESBAR_PROD_2024_X9mK'}${password}`);
-    await saveUsers([...users, { id:uid(), name:name.trim(), email:normalizedEmail, role, negocios, passwordHash:hash, passwordHashLocal:localPasswordHash, salt }]);
+    const account = await localCreateUser({
+      name: name.trim(),
+      email: normalizedEmail,
+      role,
+      negocios,
+      password,
+    });
+    setUsers(current => [...current, normalizeAccount(account)]);
     return { success: true };
   };
 
   const updateUser = async (userId, changes) => {
-    const updated = await Promise.all(users.map(async u => {
-      if (u.id !== userId) return u;
-      let r = { ...u, ...changes };
-      if (changes.password) {
-        const salt = genSalt();
-        r.passwordHash = await hashPwd(changes.password, salt);
-        r.passwordHashLocal = localHash(`${salt}${import.meta.env.VITE_APP_PEPPER || 'GESBAR_PROD_2024_X9mK'}${changes.password}`);
-        r.salt = salt;
-      }
-      delete r.password;
-      return r;
-    }));
-    await saveUsers(updated);
+    const current = users.find(account => account.id === userId);
+    if (!current) throw new Error('No se encontró el usuario que deseas actualizar.');
+    const isMaster = current.email.trim().toLowerCase() === OWNER_EMAIL;
+    if (!isMaster && (
+      String(changes.email || '').trim().toLowerCase() === OWNER_EMAIL
+      || ['admin', 'administrador'].includes(String(changes.role || '').toLowerCase())
+    )) throw new Error('El administrador maestro no se puede asignar a otra cuenta.');
+    const payload = isMaster
+      ? { name: changes.name, ...(changes.password ? { password: changes.password } : {}) }
+      : { ...changes, role:['admin', 'administrador'].includes(String(changes.role || '').toLowerCase()) ? 'gerente' : changes.role };
+    const updated = normalizeAccount(await localUpdateUser(userId, payload));
+    setUsers(accounts => accounts.map(account => account.id === userId ? updated : account));
     if (user?.id === userId) {
-      const u = updated.find(x => x.id === userId);
-      if (u) setUser({ id:u.id, name:u.name, email:u.email, role:u.role, negocios:u.negocios });
+      setUser({ id:updated.id, name:updated.name, email:updated.email, role:updated.role, negocios:updated.negocios });
     }
   };
 
   const deleteUser = async id => {
     if (id === user?.id) return;
+    if (users.find(account => account.id === id)?.email.trim().toLowerCase() === OWNER_EMAIL) {
+      throw new Error('El administrador maestro no se puede eliminar.');
+    }
     const saved = await localDelete('usuarios', { id });
     if (!saved) throw new Error('No fue posible eliminar el usuario de SQLite.');
     setUsers(users.filter(u => u.id !== id));
   };
 
+  const setupMaster = async (name, password) => {
+    const result = await createMasterAccount(name, password);
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
+      token:result.token, userId:result.user.id, expiresAt:result.expiresAt,
+    }));
+    const rows = await localFetch('usuarios');
+    if (!Array.isArray(rows)) throw new Error('La cuenta se creó, pero no se pudo cargar desde SQLite.');
+    const accounts = rows.map(normalizeAccount);
+    const master = accounts.find(account => account.email === OWNER_EMAIL);
+    if (!master) throw new Error('La cuenta maestra no aparece en la base de datos.');
+    setUsers(accounts);
+    setSetupRequired(false);
+    setAuthError('');
+    setUser({ id:master.id, name:master.name, email:master.email, role:master.role, negocios:master.negocios });
+    return { success:true };
+  };
+
   return (
-    <AuthCtx.Provider value={{ user, users, authLoading, authError, login, logout, createUser, updateUser, deleteUser, can, canSeeNeg }}>
+    <AuthCtx.Provider value={{ user, users, authLoading, authError, setupRequired, setupMaster, login, logout, createUser, updateUser, deleteUser, can, canSeeNeg }}>
       {children}
     </AuthCtx.Provider>
   );

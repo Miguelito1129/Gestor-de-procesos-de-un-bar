@@ -1,6 +1,49 @@
 // Cliente HTTP de la API local. La base de datos nunca se expone al navegador.
 export const LOCAL_API_URL = import.meta.env.VITE_LOCAL_API_URL || '/api';
-const headers = () => ({ 'Content-Type': 'application/json' });
+const headers = () => {
+  let token = '';
+  try {
+    token = JSON.parse(localStorage.getItem('gesbar_sess_v2') || 'null')?.token || '';
+  } catch {}
+  return {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+};
+
+export async function localLogin(email, password) {
+  const response = await fetch(`${LOCAL_API_URL}/auth/login`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ email, password }),
+  });
+  const result = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(result?.error || `No fue posible iniciar sesión (${response.status}).`);
+  return result;
+}
+
+export async function localLogout() {
+  const response = await fetch(`${LOCAL_API_URL}/auth/logout`, {
+    method: 'POST',
+    headers: headers(),
+  });
+  if (!response.ok) throw new Error(`No fue posible cerrar la sesión (${response.status}).`);
+}
+
+async function userRequest(path, method, data) {
+  const response = await fetch(`${LOCAL_API_URL}${path}`, {
+    method,
+    headers: headers(),
+    body: JSON.stringify(data),
+  });
+  const result = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(result?.error || `No fue posible guardar el usuario (${response.status}).`);
+  return result;
+}
+
+export const localCreateUser = user => userRequest('/users', 'POST', user);
+export const localUpdateUser = (id, changes) =>
+  userRequest(`/users/${encodeURIComponent(id)}`, 'PATCH', changes);
 
 export async function localFetch(table, filter = '') {
   try {
@@ -10,7 +53,18 @@ export async function localFetch(table, filter = '') {
   } catch (error) { console.error(error); return null; }
 }
 
-export async function localInsert(table, data) {
+export async function createMasterAccount(name, password) {
+  const response = await fetch(`${LOCAL_API_URL}/setup/master`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ name, password }),
+  });
+  const result = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(result?.error || `No fue posible configurar el administrador maestro (${response.status}).`);
+  return result;
+}
+
+export async function localInsertDetailed(table, data) {
   try {
     const r = await fetch(`${LOCAL_API_URL}/${table}`, {
       method: 'POST',
@@ -21,8 +75,16 @@ export async function localInsert(table, data) {
       const details = await r.json().catch(() => null);
       throw new Error(details?.error || `POST ${table} failed: ${r.status}`);
     }
-    return true;
-  } catch (error) { console.error(error); return false; }
+    return { ok: true, error: '' };
+  } catch (error) {
+    console.error(error);
+    return { ok: false, error: error.message || `No fue posible guardar en ${table}.` };
+  }
+}
+
+export async function localInsert(table, data) {
+  const result = await localInsertDetailed(table, data);
+  return result.ok;
 }
 
 export async function localUpsert(table, data) {
@@ -63,6 +125,58 @@ export async function localDelete(table, match) {
     if (!r.ok) throw new Error(`DELETE ${table} failed: ${r.status}`);
     return true;
   } catch (error) { console.error(error); return false; }
+}
+
+export async function localDeleteNegocio(negocioId) {
+  const response = await fetch(`${LOCAL_API_URL}/negocios/${encodeURIComponent(negocioId)}`, {
+    method: 'DELETE',
+    headers: headers(),
+  });
+  if (!response.ok) {
+    const details = await response.json().catch(() => null);
+    throw new Error(details?.error || `DELETE negocio failed: ${response.status}`);
+  }
+  return true;
+}
+
+export async function localPrintInvoice(comandaId, userId) {
+  const response = await fetch(`${LOCAL_API_URL}/print/invoice`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ comanda_id: comandaId, user_id: userId }),
+  });
+  const result = await response.json().catch(() => null);
+  if (!response.ok) {
+    if (result?.error) throw new Error(result.error);
+    if (response.status === 404) {
+      throw new Error("El servidor activo no tiene habilitada la impresión. Reinicia el backend desde la carpeta de esta versión.");
+    }
+    if (response.status === 503) {
+      throw new Error("Impresora sin conexión o puerto Bluetooth no disponible. Revisa Printer001 y vuelve a intentarlo.");
+    }
+    throw new Error(`No fue posible imprimir el comprobante (HTTP ${response.status}).`);
+  }
+  return result;
+}
+
+export async function localPrintOrder(comandaId, userId) {
+  const response = await fetch(`${LOCAL_API_URL}/print/order`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ comanda_id: comandaId, user_id: userId }),
+  });
+  const result = await response.json().catch(() => null);
+  if (!response.ok) {
+    if (result?.error) throw new Error(result.error);
+    if (response.status === 404) {
+      throw new Error("El servidor activo no tiene habilitada la impresión de pedidos. Reinicia el backend desde la carpeta de esta versión.");
+    }
+    if (response.status === 503) {
+      throw new Error("Impresora sin conexión o puerto Bluetooth no disponible. Revisa Printer001 y vuelve a intentarlo.");
+    }
+    throw new Error(`No fue posible imprimir el pedido (HTTP ${response.status}).`);
+  }
+  return result;
 }
 
 // ── Helpers de dominio ─────────────────────────────────────────────────────────

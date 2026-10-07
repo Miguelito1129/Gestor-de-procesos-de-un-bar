@@ -1,8 +1,11 @@
 const { DatabaseSync } = require('node:sqlite');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
-const dataDir = path.join(__dirname, 'data');
+const dataDir = process.pkg
+  ? path.join(process.env.LOCALAPPDATA || process.env.APPDATA || os.homedir(), 'GestionBar', 'data')
+  : path.join(__dirname, 'data');
 fs.mkdirSync(dataDir, { recursive: true });
 
 const db = new DatabaseSync(path.join(dataDir, 'gestionbar.sqlite'));
@@ -17,6 +20,10 @@ CREATE TABLE IF NOT EXISTS usuarios (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
   role TEXT NOT NULL, negocios TEXT DEFAULT 'all', password_hash TEXT NOT NULL,
   salt TEXT NOT NULL, password_hash_local TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS sesiones (
+  token_hash TEXT PRIMARY KEY, usuario_id TEXT NOT NULL,
+  expira_en TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS staff (
   id TEXT PRIMARY KEY, negocio_id TEXT NOT NULL, name TEXT NOT NULL,
@@ -86,13 +93,14 @@ CREATE TABLE IF NOT EXISTS comandas (
   consecutivo INTEGER, mesero_nombre TEXT,
   estado TEXT DEFAULT 'enviada', modo_pago TEXT, subtotal INTEGER DEFAULT 0,
   descuento INTEGER DEFAULT 0, total INTEGER DEFAULT 0, creado_en TEXT DEFAULT CURRENT_TIMESTAMP,
+  actualizada_en TEXT,
   confirmado_en TEXT, despachado_en TEXT, pagado_en TEXT,
   pago_confirmado INTEGER DEFAULT 0, pago_registrado_por TEXT, pago_registrado_en TEXT
 );
 CREATE TABLE IF NOT EXISTS comanda_items (
   id TEXT PRIMARY KEY, comanda_id TEXT NOT NULL, producto_id TEXT NOT NULL,
   cantidad INTEGER NOT NULL, precio_unitario INTEGER NOT NULL, descuento INTEGER DEFAULT 0,
-  es_cortesia INTEGER DEFAULT 0, autorizado_por TEXT
+  es_cortesia INTEGER DEFAULT 0, autorizado_por TEXT, promociones_aplicadas TEXT DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS pagos (
   id TEXT PRIMARY KEY, comanda_id TEXT NOT NULL, tipo TEXT NOT NULL,
@@ -136,6 +144,14 @@ if (!userColumns.includes('password_hash_local')) {
   db.exec('ALTER TABLE usuarios ADD COLUMN password_hash_local TEXT');
 }
 
+const ownerEmail = 'mdmm1100@gmail.com';
+db.prepare(`
+  UPDATE usuarios SET role = 'gerente'
+  WHERE lower(role) IN ('admin', 'administrador') AND lower(email) <> ?
+`).run(ownerEmail);
+db.prepare("UPDATE usuarios SET role = 'administrador', negocios = 'all' WHERE lower(email) = ?").run(ownerEmail);
+db.prepare('DELETE FROM sesiones WHERE expira_en <= ?').run(new Date().toISOString());
+
 const promotionColumns = db.prepare('PRAGMA table_info(promociones)').all().map(column => column.name);
 if (!promotionColumns.includes('productos_combo')) {
   db.exec("ALTER TABLE promociones ADD COLUMN productos_combo TEXT DEFAULT '[]'");
@@ -160,17 +176,34 @@ if (!comandaColumns.includes('pago_registrado_por')) {
 if (!comandaColumns.includes('pago_registrado_en')) {
   db.exec('ALTER TABLE comandas ADD COLUMN pago_registrado_en TEXT');
 }
+if (!comandaColumns.includes('actualizada_en')) {
+  db.exec('ALTER TABLE comandas ADD COLUMN actualizada_en TEXT');
+}
+
+const comandaItemColumns = db.prepare('PRAGMA table_info(comanda_items)').all().map(column => column.name);
+if (!comandaItemColumns.includes('promociones_aplicadas')) {
+  db.exec("ALTER TABLE comanda_items ADD COLUMN promociones_aplicadas TEXT DEFAULT '[]'");
+}
 
 const movementColumns = db.prepare('PRAGMA table_info(movimientos_inventario)').all().map(column => column.name);
 if (!movementColumns.includes('comprobante_url')) {
   db.exec('ALTER TABLE movimientos_inventario ADD COLUMN comprobante_url TEXT');
 }
 
+const transferColumns = db.prepare('PRAGMA table_info(transferencias)').all().map(column => column.name);
+if (!transferColumns.includes('turno_id')) {
+  db.exec('ALTER TABLE transferencias ADD COLUMN turno_id TEXT');
+}
+if (!transferColumns.includes('mesero_id')) {
+  db.exec('ALTER TABLE transferencias ADD COLUMN mesero_id TEXT');
+}
+
 function encode(row) {
   return Object.fromEntries(Object.entries(row).map(([key, value]) => {
     if (typeof value !== 'string') return [key, value];
     if (['checklist', 'personal_detalle', 'banco_detalle', 'movimientos', 'gastos_detalle',
-      'inventario_apertura', 'inventario_cierre', 'meseros_ids', 'turnos_incluidos', 'negocios', 'productos_combo'].includes(key)) {
+      'inventario_apertura', 'inventario_cierre', 'meseros_ids', 'turnos_incluidos', 'negocios', 'productos_combo',
+      'promociones_aplicadas'].includes(key)) {
       try { return [key, JSON.parse(value)]; } catch { return [key, value]; }
     }
     return [key, value];
@@ -181,11 +214,12 @@ function decode(data) {
   return Object.fromEntries(Object.entries(data).map(([key, value]) => {
     if (typeof value === 'boolean') return [key, value ? 1 : 0];
     if (value && typeof value === 'object' && ['checklist', 'personal_detalle', 'banco_detalle', 'movimientos',
-      'gastos_detalle', 'inventario_apertura', 'inventario_cierre', 'meseros_ids', 'turnos_incluidos', 'negocios', 'productos_combo'].includes(key)) {
+      'gastos_detalle', 'inventario_apertura', 'inventario_cierre', 'meseros_ids', 'turnos_incluidos', 'negocios', 'productos_combo',
+      'promociones_aplicadas'].includes(key)) {
       return [key, JSON.stringify(value)];
     }
     return [key, value];
   }));
 }
 
-module.exports = { db, encode, decode };
+module.exports = { db, encode, decode, dataDir };

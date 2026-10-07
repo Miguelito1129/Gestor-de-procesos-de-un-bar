@@ -6,7 +6,7 @@ datos local.
 
 ## Puesta en marcha rápida
 
-Requiere Node.js 18 o superior.
+Para desarrollo se requiere Node.js 22.5 o superior.
 
 ```bash
 npm install
@@ -17,6 +17,29 @@ Después abre `http://localhost:3000`. Para usar la aplicación desde un celular
 abre `http://IP_DEL_SERVIDOR:3000` desde la misma red Wi-Fi.
 
 La guía completa está en [GUIA_DESPLIEGUE.md](./GUIA_DESPLIEGUE.md).
+
+## Ejecutable portable para Windows
+
+En el computador de desarrollo, instala las dependencias y genera el ejecutable:
+
+```powershell
+npm install
+npm run build:portable
+```
+
+Comparte únicamente `release/GestionBar.exe`. El otro computador no necesita
+Node.js, npm, Visual Studio ni Visual Studio Code. Al abrir el archivo, inicia
+el servidor local y abre la aplicación en el navegador. Mantén abierta la ventana
+del ejecutable mientras se usa el programa.
+
+Cada computador guarda sus propios datos en
+`%LOCALAPPDATA%\GestionBar\data\gestionbar.sqlite`. El ejecutable no incluye ni
+transfiere los datos actuales del negocio.
+
+El primer inicio requiere autorizar el equipo; consulta la sección
+**Autorizar cada computador** de [la guía de despliegue](./GUIA_DESPLIEGUE.md).
+La cuenta maestra `mdmm1100@gmail.com` se configura en el primer inicio
+autorizado y administra las cuentas de gerente y del personal.
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
