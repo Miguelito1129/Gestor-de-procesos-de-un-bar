@@ -3,6 +3,7 @@ const path = require('path');
 const { execFile } = require('child_process');
 const api = require('./backend/api');
 const { isLicensed } = require('./backend/license');
+const { startBackupScheduler } = require('./backend/backup');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -76,6 +77,7 @@ app.get('*', (req, res) => {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`GestionBar local server running on http://0.0.0.0:${PORT}`);
+  startBackupScheduler();
   if (process.pkg) {
     execFile('rundll32.exe', ['url.dll,FileProtocolHandler', `http://localhost:${PORT}`], error => {
       if (error) console.error('No fue posible abrir el navegador automáticamente:', error.message);

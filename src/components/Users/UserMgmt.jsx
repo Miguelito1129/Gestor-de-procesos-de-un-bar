@@ -13,6 +13,8 @@ export default function UserMgmt({ negocios, onClose }) {
   const [saving, setSaving] = useState(false);
   const ROL_OPTS  = [['gerente','Gerente'],['barra','Barra'],['mesero','Mesero'],['dueño','Dueño']];
   const ROLE_BADGE = { admin:C.amber, administrador:C.amber, gerente:C.amber, auxiliar:C.indigo, jefe:C.green, dueño:C.green, barra:C.amber, mesero:C.indigo };
+  const editingMaster = editId !== null
+    && users.find(account => account.id === editId)?.email.trim().toLowerCase() === OWNER_EMAIL;
 
   const resetForm = () => setF({ name:'', email:'', role:'mesero', negocios:'all', password:'', negArr:[] });
 
@@ -87,17 +89,17 @@ export default function UserMgmt({ negocios, onClose }) {
 
       {tab==='form' && (
         <div>
-          {editId&&users.find(account=>account.id===editId)?.email.trim().toLowerCase()===OWNER_EMAIL&&(
+          {editingMaster&&(
             <div style={{padding:'8px 10px',marginBottom:12,borderRadius:8,background:C.amber+'15',color:C.amber,fontSize:11}}>
               El correo, el rol y los permisos de la única cuenta maestra están protegidos. Aquí solo puedes cambiar el nombre o la contraseña.
             </div>
           )}
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
             <div><div style={s.label}>Nombre</div><input style={s.inp} value={f.name} onChange={e=>setF(p=>({...p,name:e.target.value}))}/></div>
-            <div><div style={s.label}>Email</div><input style={s.inp} type="email" value={f.email} onChange={e=>setF(p=>({...p,email:e.target.value}))} disabled={f.email.trim().toLowerCase()===OWNER_EMAIL}/></div>
+            <div><div style={s.label}>Email</div><input style={s.inp} type="email" value={f.email} onChange={e=>setF(p=>({...p,email:e.target.value}))} disabled={editingMaster}/></div>
             <div>
               <div style={s.label}>Rol</div>
-              {f.email.trim().toLowerCase()===OWNER_EMAIL
+              {editingMaster
                 ? <div style={{...s.inp,color:C.amber}}>Administrador maestro</div>
                 : <select style={s.sel} value={f.role} onChange={e=>setF(p=>({...p,role:e.target.value}))}>
                     {ROL_OPTS.map(([v,l])=><option key={v} value={v}>{l}</option>)}

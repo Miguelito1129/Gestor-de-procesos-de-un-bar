@@ -204,7 +204,7 @@ export default function MainApp() {
 
   if (dbLoading) return (
     <div style={{minHeight:'100vh',background:C.bg,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:16}}>
-      <div style={{fontSize:32}}>▸</div>
+      <img src="/gestionbar-logo.png" alt="GestiónBar" style={{width:72,height:67,objectFit:'contain'}}/>
       <div style={{color:C.amber,fontWeight:800,fontSize:18}}>GestiónBar</div>
       <div style={{color:C.sub,fontSize:13}}>Cargando datos desde SQLite local...</div>
       <div style={{display:'flex',gap:6,marginTop:8}}>
@@ -217,7 +217,7 @@ export default function MainApp() {
   if (!negocio) return (
     <div style={{minHeight:'100vh',background:C.bg,color:C.text,display:'flex',alignItems:'center',justifyContent:'center',padding:'1.5rem',textAlign:'center'}}>
       <div style={{maxWidth:460}}>
-        <div style={{fontSize:32,marginBottom:12}}>▸</div>
+        <img src="/gestionbar-logo.png" alt="GestiónBar" style={{width:72,height:67,objectFit:'contain',marginBottom:12}}/>
         <h2 style={{margin:'0 0 8px'}}>No hay negocios registrados</h2>
         <p style={{color:C.sub,lineHeight:1.5}}>Crea tu negocio real desde el botón <strong>+</strong> para comenzar a registrar productos, personal y turnos.</p>
         {isAdmin && <button style={s.btn('primary')} onClick={()=>setShowNuevoNeg(true)}>Crear negocio</button>}
@@ -252,7 +252,10 @@ export default function MainApp() {
 
         {/* Header móvil */}
         <div style={{position:'sticky',top:0,zIndex:50,background:C.surface,borderBottom:`1px solid ${C.border}`,padding:'10px 14px',display:'flex',alignItems:'center',gap:10,minHeight:52}}>
-          <div style={{fontWeight:900,fontSize:16,color:C.amber,letterSpacing:'-0.5px',flexShrink:0}}>▸ GestiónBar</div>
+          <div style={{display:'flex',alignItems:'center',gap:6,fontWeight:900,fontSize:16,color:C.amber,letterSpacing:'-0.5px',flexShrink:0}}>
+            <img src="/gestionbar-logo.png" alt="" style={{width:28,height:26,objectFit:'contain'}}/>
+            <span>GestiónBar</span>
+          </div>
           <div style={{flex:1,display:'flex',gap:6,overflowX:'auto',scrollbarWidth:'none'}}>
             {visibleNegs.map(n=>(
               <button key={n.id} onClick={()=>setNegocioId(n.id)}
@@ -334,7 +337,7 @@ export default function MainApp() {
               <div style={{padding:'8px 20px',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
                 <Badge color={ROLE_BADGE[role]||C.muted} small>{ROLE_LABELS[role]||role}</Badge>
                 <span style={{fontSize:13,color:C.sub,flex:1}}>{user?.name}</span>
-                {isAdmin&&<button style={{...s.btn(),padding:'6px 12px',fontSize:12}} onClick={()=>{setShowAccessLinks(true);setShowMas(false);}}>🔗 Compartir acceso</button>}
+                {(isAdmin||isManager)&&<button style={{...s.btn(),padding:'6px 12px',fontSize:12}} onClick={()=>{setShowAccessLinks(true);setShowMas(false);}}>🔗 Compartir acceso</button>}
                 {isAdmin&&<button style={{...s.btn(),padding:'6px 12px',fontSize:12}} onClick={()=>{setShowUsers(true);setShowMas(false);}}>👤 Usuarios</button>}
                 <button style={{...s.btn('danger'),padding:'6px 12px',fontSize:12}} onClick={logout}>Salir</button>
               </div>
@@ -355,7 +358,7 @@ export default function MainApp() {
     <div className={`app-desktop${sidebarCollapsed?' app-desktop--collapsed':''}`} style={{minHeight:'100vh',background:C.bg,color:C.text,fontFamily:"'Segoe UI',system-ui,-apple-system,sans-serif"}}>
       <aside className="app-sidebar">
         <div className="app-sidebar__brand">
-          <span className="app-sidebar__brand-mark">▸</span>
+          <img className="app-sidebar__brand-mark" src="/gestionbar-logo.png" alt="GestiónBar"/>
           {!sidebarCollapsed&&<span className="app-sidebar__brand-name">GestiónBar</span>}
           <button
             className="app-sidebar__collapse"
@@ -439,7 +442,7 @@ export default function MainApp() {
               <span aria-hidden="true">👤</span>{!sidebarCollapsed&&<span>Usuarios</span>}
             </button>
           )}
-          {isAdmin&&(
+          {(isAdmin||isManager)&&(
             <button className="app-sidebar__utility" onClick={()=>setShowAccessLinks(true)} title="Compartir acceso con meseros y barra">
               <span aria-hidden="true">🔗</span>{!sidebarCollapsed&&<span>Compartir acceso</span>}
             </button>

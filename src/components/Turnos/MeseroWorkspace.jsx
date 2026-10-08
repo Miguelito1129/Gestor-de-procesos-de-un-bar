@@ -1498,8 +1498,8 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                     : "1px solid rgba(255,255,255,.08)",
                   background:
                     "rgba(255,255,255,.025)",
-                  padding: 13,
-                  marginBottom: 9,
+                  padding: 18,
+                  marginBottom: 12,
                 }}
               >
                 {/* CABECERA COMANDA */}
@@ -1525,8 +1525,8 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                     <div
                       style={{
                         color: C.sub,
-                        fontSize: 10,
-                        marginTop: 3,
+                        fontSize: 12,
+                        marginTop: 5,
                       }}
                     >
                       Mesero: {comanda.mesero_nombre || userName} · Pedido de las{" "}
@@ -1556,7 +1556,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                       "space-between",
                     alignItems: "center",
                     marginTop: 12,
-                    paddingTop: 10,
+                    paddingTop: 12,
                     borderTop:
                       "1px solid rgba(255,255,255,.06)",
                   }}
@@ -1564,7 +1564,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                   <span
                     style={{
                       color: C.sub,
-                      fontSize: 11,
+                      fontSize: 13,
                     }}
                   >
                     Total
@@ -1573,7 +1573,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                   <strong
                     style={{
                       color: C.green,
-                      fontSize: 16,
+                      fontSize: 18,
                     }}
                   >
                     {COP(comanda.total)}
@@ -1581,34 +1581,34 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                 </div>
 
                 {/* VER PRODUCTOS */}
-                <div style={{ marginTop: 10 }}>
-                  <button style={{ ...s.btn("ghost"), width: "100%", padding: "6px 10px", fontSize: 12 }} type="button" disabled={busy} onClick={() => toggleDetails(comanda)}>
+                <div style={{ marginTop: 12 }}>
+                  <button style={{ ...s.btn("ghost"), width: "100%", padding: "9px 12px", fontSize: 13, minHeight: 42 }} type="button" disabled={busy} onClick={() => toggleDetails(comanda)}>
                     {expandedId === comanda.id ? "Ocultar productos" : "Ver productos"}
                   </button>
                 </div>
 
                 {expandedId === comanda.id && (
-                  <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, background: C.surface, border: `1px solid ${C.border}` }}>
-                    <div style={{ color: C.sub, fontSize: 11, marginBottom: 6 }}>Comparación de pedido vs inventario</div>
+                  <div style={{ marginTop: 10, padding: "12px 14px", borderRadius: 10, background: C.surface, border: `1px solid ${C.border}` }}>
+                    <div style={{ color: C.sub, fontSize: 12, marginBottom: 8 }}>Comparación de pedido vs inventario</div>
                     {(itemDetails[comanda.id] || []).map(item => {
                       const productStock = Number(productos.find(p => p.id === item.producto_id)?.stock || 0);
                       const available = productStock >= item.cantidad;
                       return (
-                        <div key={item.id} style={{ padding: "8px 0", borderBottom: `1px solid ${C.border}50`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                        <div key={item.id} style={{ padding: "10px 0", borderBottom: `1px solid ${C.border}50`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
                           <div style={{ minWidth: 0 }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                              <span style={{ fontWeight: 600, fontSize: 12 }}>{item.nombre}</span>
+                              <span style={{ fontWeight: 650, fontSize: 14 }}>{item.nombre}</span>
                               <span style={{ 
                                 display: "inline-flex", alignItems: "center", gap: 4, 
                                 background: available ? "rgba(52, 211, 153, 0.15)" : "rgba(248, 113, 113, 0.15)", 
-                                padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700,
+                                padding: "4px 8px", borderRadius: 6, fontSize: 11, fontWeight: 700,
                                 color: available ? C.green : C.red
                               }}>
                                 Pide {item.cantidad} <span style={{ color: C.sub, opacity: 0.7, fontWeight: 400 }}>/</span> Stock {productStock}
                               </span>
                             </div>
                           </div>
-                          <strong style={{ color: C.green, fontSize: 12, flexShrink: 0 }}>{COP(Number(item.cantidad) * Number(item.precio_unitario))}</strong>
+                          <strong style={{ color: C.green, fontSize: 13, flexShrink: 0 }}>{COP(Number(item.cantidad) * Number(item.precio_unitario))}</strong>
                         </div>
                       );
                     })}

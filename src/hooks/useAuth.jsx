@@ -1,7 +1,7 @@
-import { useState, useEffect, createContext, useContext } from "react";
+import { useState, useEffect, useCallback, createContext, useContext } from "react";
 import { can, canSeeNeg, OWNER_EMAIL } from "../constants/roles.js";
 import {
-  createMasterAccount, localCreateUser, localFetch, localLogin, localLogout,
+  createMasterAccount, localCreateUser, localFetch, localFetchOrThrow, localLogin, localLogout,
   localUpdateUser, localDelete,
 } from "../lib/localApi.js";
 
@@ -62,6 +62,16 @@ export function AuthProvider({ children }) {
   const [authLoading, setAuthLoading] = useState(true);
   const [authError,   setAuthError]   = useState('');
   const [setupRequired, setSetupRequired] = useState(false);
+
+  const refreshUsers = useCallback(async () => {
+    const storedUsers = await localFetchOrThrow('usuarios');
+    if (!Array.isArray(storedUsers)) {
+      throw new Error('No fue posible actualizar las cuentas de usuario desde SQLite.');
+    }
+    const accounts = storedUsers.map(normalizeAccount);
+    setUsers(accounts);
+    return accounts;
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -207,7 +217,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthCtx.Provider value={{ user, users, authLoading, authError, setupRequired, setupMaster, login, logout, createUser, updateUser, deleteUser, can, canSeeNeg }}>
+    <AuthCtx.Provider value={{ user, users, authLoading, authError, setupRequired, setupMaster, login, logout, createUser, updateUser, deleteUser, refreshUsers, can, canSeeNeg }}>
       {children}
     </AuthCtx.Provider>
   );

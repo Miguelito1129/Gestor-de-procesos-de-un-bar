@@ -56,14 +56,21 @@ solicita crear la cuenta maestra `mdmm1100@gmail.com` con una contraseña de al
 menos 12 caracteres. Configúrala desde `http://localhost:3000` en el computador
 servidor. Desde **Gestión de Usuarios**, el administrador maestro crea cuentas
 de **Gerente**, barra y mesero. El gerente mantiene las funciones de operación
-diaria; solo el administrador maestro puede gestionar usuarios, crear o eliminar
-negocios y compartir los enlaces de red. La migración convierte las antiguas
+diaria; solo el administrador maestro puede gestionar usuarios y crear o eliminar
+negocios. Tanto el administrador maestro como los gerentes pueden compartir los
+enlaces de red. La migración convierte las antiguas
 cuentas con rol Administrador a Gerente, salvo la cuenta maestra reservada.
 
 El inicio de sesión se valida en el servidor. Las rutas de datos requieren una
 sesión autenticada, con vencimiento a las ocho horas; cerrar sesión invalida el
 token en el servidor y las respuestas de usuarios no exponen hashes de
-contraseña. La licencia dificulta el uso casual de copias, pero no impide una
+contraseña. La API limita las lecturas y escrituras al negocio asignado a cada
+cuenta; los datos ligados a turnos y comandas también se validan contra ese
+negocio. Barra y Mesero pueden ver los negocios que tienen asignados, incluso
+antes de abrir un turno; solo acceden a datos operativos de turnos abiertos donde
+están autorizados. El administrador maestro y los gerentes pueden compartir los
+enlaces de acceso de la red local con Mesero y Barra.
+La licencia dificulta el uso casual de copias, pero no impide una
 modificación deliberada del ejecutable ni la clonación completa de Windows o
 de una máquina virtual.
 
@@ -172,12 +179,41 @@ donde corre este backend.
 
 ## Persistencia y respaldo
 
-El archivo de datos se crea automáticamente en:
+La base de datos activa se guarda en:
 
-`backend/data/gestionbar.sqlite`
+`backend/data/gestionbar.sqlite` en modo desarrollo, o `%LOCALAPPDATA%\GestionBar\data\gestionbar.sqlite` al usar el ejecutable portable.
 
-Para respaldarlo, detén el servidor y copia ese archivo a un lugar seguro. No lo
-borres mientras la aplicación esté escribiendo datos.
+GestiónBar crea automáticamente una copia al iniciar el servidor y luego cada 15
+minutos. Usa el respaldo en línea de SQLite y verifica la integridad de la base y
+de cada copia. Conserva las 96 copias más recientes por destino.
+
+- Copia local: `backend/data/backups` en desarrollo o
+  `%LOCALAPPDATA%\GestionBar\data\backups` en el ejecutable portable.
+- Copia para la nube: si Windows tiene OneDrive configurado, también se guarda
+  en `%OneDrive%\GestionBar\Backups`. El cliente de OneDrive la sincroniza con la
+  nube cuando haya conexión; si está sin conexión, la copia queda en esa carpeta
+  pendiente de sincronización y la copia local adicional permanece disponible.
+- Si OneDrive no está instalado o configurado, el programa guarda el respaldo
+  local e informa ese estado en la consola del servidor.
+
+Los respaldos contienen todos los datos del negocio, incluidos los usuarios y
+sus hashes de contraseña. Protege el acceso a la cuenta y a la carpeta de
+OneDrive; no compartas esos archivos públicamente.
+
+El intervalo se puede cambiar con la variable de entorno
+`GESTIONBAR_BACKUP_INTERVAL_MINUTES` (entero de 1 a 1440). Por ejemplo, en
+PowerShell, antes de iniciar el servidor:
+
+```powershell
+$env:GESTIONBAR_BACKUP_INTERVAL_MINUTES = "5"
+npm start
+```
+
+Para restaurar una copia, cierra GestiónBar y conserva primero una copia aparte
+del archivo dañado. Reemplaza el archivo activo por un `.sqlite` reciente de la
+carpeta de respaldos. Inicia GestiónBar y comprueba los datos antes de eliminar
+la copia del archivo dañado. No reemplaces la base mientras el servidor esté
+abierto.
 
 ## Modelo de operación
 

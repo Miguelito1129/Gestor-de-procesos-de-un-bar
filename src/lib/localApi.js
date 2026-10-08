@@ -53,6 +53,15 @@ export async function localFetch(table, filter = '') {
   } catch (error) { console.error(error); return null; }
 }
 
+export async function localFetchOrThrow(table, filter = '') {
+  const response = await fetch(`${LOCAL_API_URL}/${table}?${filter}`, { headers: headers() });
+  const result = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(result?.error || `GET ${table} failed: ${response.status}`);
+  }
+  return result;
+}
+
 export async function createMasterAccount(name, password) {
   const response = await fetch(`${LOCAL_API_URL}/setup/master`, {
     method: 'POST',

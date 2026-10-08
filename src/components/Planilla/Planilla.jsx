@@ -209,10 +209,48 @@ import PerspectivaCierre from "./PerspectivaCierre.jsx";
 import { preparePhoto } from "../common/UploadGasto.jsx";
 
 export default function Planilla({ negocio, onUpdateNegocio }) {
-  const { user, users } = useAuth();
+  const { user, users, refreshUsers } = useAuth();
   const isJefe = user?.role === 'jefe';
   const isAux  = user?.role === 'auxiliar';
   const TURNO_KEY = `gesbar_turno_${negocio.id}`;
+  const [usersLoading, setUsersLoading] = useState(true);
+  const [usersError, setUsersError] = useState('');
+  useEffect(() => {
+    let active = true;
+    if (!['administrador', 'gerente'].includes(String(user?.role || '').toLowerCase())) {
+      setUsersLoading(false);
+      return () => { active = false; };
+    }
+    setUsersLoading(true);
+    setUsersError('');
+    refreshUsers()
+      .catch(error => {
+        console.error('No fue posible actualizar las cuentas para abrir el turno:', error);
+        if (active) setUsersError(error.message || 'No fue posible actualizar las cuentas de usuario.');
+      })
+      .finally(() => {
+        if (active) setUsersLoading(false);
+      });
+    return () => { active = false; };
+  }, [negocio.id, refreshUsers, user?.role]);
+  const barraUsers = users.filter(account => {
+    if (String(account.role || '').trim().toLowerCase() !== 'barra') return false;
+    if (String(account.negocios || '').trim().toLowerCase() === 'all') return true;
+    if (Array.isArray(account.negocios)) {
+      return account.negocios.some(id => String(id) === String(negocio.id));
+    }
+    if (typeof account.negocios === 'string') {
+      try {
+        const assignedBusinesses = JSON.parse(account.negocios);
+        return Array.isArray(assignedBusinesses)
+          ? assignedBusinesses.some(id => String(id) === String(negocio.id))
+          : String(assignedBusinesses) === String(negocio.id);
+      } catch {
+        return account.negocios.trim() === String(negocio.id);
+      }
+    }
+    return false;
+  }).sort((first, second) => String(first.name || '').localeCompare(String(second.name || ''), 'es'));
 
   const saved = () => { try{return JSON.parse(localStorage.getItem(TURNO_KEY)||'{}');}catch{return {};} };
 
@@ -223,6 +261,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
   const [apertura,setApertura] = useState(()=>saved().apertura||'');
   const [baseCaja,setBaseCaja] = useState(()=>saved().baseCaja||'1000000');
   const [staffFilter,setStaffFilter] = useState('');
+  const [barraSeleccionada,setBarraSeleccionada] = useState('');
   const [authorizedMeseroIds,setAuthorizedMeseroIds] = useState(()=>saved().authorizedMeseroIds||[]);
   const [staffActivo,setStaffActivo] = useState(()=>{
     const sv=saved();
@@ -618,6 +657,11 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
   };
 
   const confirmarApertura = async (checkItems, novedadesApert='') => {
+    const barra = barraUsers.find(account => String(account.id) === String(barraSeleccionada));
+    if (!barra) {
+      alert('Selecciona una cuenta de Barra asignada a este negocio antes de abrir el turno.');
+      return;
+    }
     const existing = await localFetch('turnos', `negocio_id=eq.${negocio.id}&estado=eq.abierto&select=id&limit=1`);
     if (existing?.length) {
       alert('Ya existe un turno abierto para este negocio.');
@@ -625,7 +669,6 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
     }
     const id = uid();
     const activos = staffActivo.filter(person => person.activo && person.rol !== 'mesero');
-    const barra = activos.find(person => person.rol === 'barra');
     const inventarioApertura = negocio.productos.map(product => ({
       producto_id: product.id,
       nombre: product.name,
@@ -639,7 +682,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
       estado: 'abierto',
       inventario_apertura: inventarioApertura,
       abierto_por: user?.id || null,
-      barra_id: barra?.id || null,
+      barra_id: barra.id,
       meseros_ids: [],
       novedades_apertura: novedadesApert.trim() || null,
     });
@@ -840,6 +883,37 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
             </div>
             <div style={{marginBottom:12}}><div style={s.label}>Base de Caja (COP)</div><input style={s.inp} type="number" value={baseCaja} onChange={e=>setBaseCaja(e.target.value)}/></div>
             <div style={{marginBottom:12}}>
+              <div style={s.label}>Usuario de Barra para este turno</div>
+              <select
+                style={s.sel}
+                value={barraSeleccionada}
+                onChange={event=>setBarraSeleccionada(event.target.value)}
+              >
+                <option value="">Selecciona la cuenta de Barra</option>
+                {barraUsers.map(account=>(
+                  <option key={account.id} value={account.id}>{account.name} · {account.email}</option>
+                ))}
+              </select>
+              <div style={{fontSize:11,color:C.sub,marginTop:5}}>
+                Solo esta cuenta podrá acceder al espacio de Barra durante el turno.
+              </div>
+              {!usersLoading&&usersError&&(
+                <div role="alert" style={{fontSize:12,color:C.red,marginTop:6}}>
+                  {usersError}
+                </div>
+              )}
+              {usersLoading&&(
+                <div role="status" style={{fontSize:12,color:C.sub,marginTop:6}}>
+                  Actualizando cuentas de Barra...
+                </div>
+              )}
+              {!usersLoading&&!usersError&&!barraUsers.length&&(
+                <div role="alert" style={{fontSize:12,color:C.red,marginTop:6}}>
+                  No hay usuarios de Barra asignados a este negocio. Asigna uno en Gestión de Usuarios para poder abrir el turno.
+                </div>
+              )}
+            </div>
+            <div style={{marginBottom:12}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
                 <div style={s.label}>Personal del Turno</div>
                 <div style={{display:'flex',gap:5}}>
@@ -869,7 +943,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
               </div>
               <div style={{fontSize:11,color:C.sub,marginTop:5}}>{staffActivo.filter(person=>person.activo).length}/{staffActivo.length} personas seleccionadas</div>
             </div>
-            <button className="planilla-open-button" type="button" onClick={()=>setShowChecklist(true)}>Abrir turno <span>→</span></button>
+            <button className="planilla-open-button" type="button" disabled={usersLoading||Boolean(usersError)||!barraUsers.length||!barraSeleccionada} onClick={()=>setShowChecklist(true)}>Abrir turno <span>→</span></button>
           </div>
           <div className="planilla-history-card">
             <div className="planilla-history-card__heading">

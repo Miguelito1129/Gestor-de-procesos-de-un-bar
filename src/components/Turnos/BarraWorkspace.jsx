@@ -302,7 +302,11 @@ export default function BarraWorkspace({ negocio, userName }) {
           Meseros del turno <b>{authorizedMeseroIds.length}/{negocioMeseros.length}</b>
         </button>
       </div>
-      {activeModule === "waiters" ? (
+      {!turno ? (
+        <section className="barra-waiter-access__notice" role="status">
+          No tienes un turno abierto asignado en {negocio.name}. El gerente debe seleccionar tu cuenta de Barra al abrir la planilla.
+        </section>
+      ) : activeModule === "waiters" ? (
         <section className="barra-waiter-access">
           <header className="barra-waiter-access__heading">
             <div>

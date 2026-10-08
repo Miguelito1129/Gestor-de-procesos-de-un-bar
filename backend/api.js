@@ -427,7 +427,169 @@ function rowsBelongToWaiter(table, rows, userId) {
 function matchingRows(table, filters) {
   if (!filters.length) return [];
   return db.prepare(`SELECT * FROM ${table} WHERE ${filters.map(item => item.sql).join(' AND ')}`)
-    .all(...filters.map(item => item.value));
+    .all(...filters.flatMap(item => item.values || [item.value]));
+}
+
+function accountBusinessIds(user) {
+  const assigned = encode({ negocios: user?.negocios }).negocios;
+  if (assigned === 'all') {
+    return db.prepare('SELECT id FROM negocios').all().map(row => row.id);
+  }
+  if (!Array.isArray(assigned)) return [];
+  return [...new Set(assigned.filter(id => typeof id === 'string'))]
+    .filter(id => db.prepare('SELECT 1 FROM negocios WHERE id = ?').get(id));
+}
+
+function accessibleBusinessIds(user) {
+  if (isMasterUser(user)) return null;
+  const assignedIds = accountBusinessIds(user);
+  const role = String(user?.role || '').toLowerCase();
+  if (!['barra', 'barra_fija', 'mesero', 'mesero_fijo'].includes(role) || !assignedIds.length) {
+    return assignedIds;
+  }
+
+  const activeTurns = db.prepare(`
+    SELECT negocio_id, barra_id, meseros_ids FROM turnos
+    WHERE estado = 'abierto' AND negocio_id IN (${assignedIds.map(() => '?').join(', ')})
+  `).all(...assignedIds);
+  const authorized = activeTurns.filter(turno => {
+    if (['barra', 'barra_fija'].includes(role)) return turno.barra_id === user.id;
+    try {
+      const waiters = JSON.parse(turno.meseros_ids || '[]');
+      return Array.isArray(waiters) && waiters.some(id => String(id) === String(user.id));
+    } catch (error) {
+      console.error(`No fue posible leer los meseros autorizados del turno ${turno.negocio_id}:`, error);
+      return false;
+    }
+  });
+  return [...new Set(authorized.map(turno => turno.negocio_id))];
+}
+
+function businessScope(table, user) {
+  if (table === 'negocios' && !isMasterUser(user)) {
+    const assignedBusinessIds = accountBusinessIds(user);
+    if (!assignedBusinessIds.length) return { sql: '0 = 1', values: [] };
+    return {
+      sql: `id IN (${assignedBusinessIds.map(() => '?').join(', ')})`,
+      values: assignedBusinessIds,
+    };
+  }
+
+  const businessIds = accessibleBusinessIds(user);
+  if (businessIds === null) return null;
+  if (!businessIds.length) return { sql: '0 = 1', values: [] };
+
+  const placeholders = businessIds.map(() => '?').join(', ');
+  const scopeByTurn = `negocio_id IN (${placeholders})`;
+  const role = String(user?.role || '').toLowerCase();
+  const isWaiter = ['mesero', 'mesero_fijo'].includes(role);
+  const isBar = ['barra', 'barra_fija'].includes(role);
+
+  if (table === 'negocios') {
+    return { sql: `id IN (${placeholders})`, values: businessIds };
+  }
+  if (['staff', 'productos', 'promociones', 'planillas', 'transferencias', 'gastos',
+    'gastos_fijos', 'cxc', 'movimientos_inventario', 'gastos_semanales',
+    'cierres_semanales'].includes(table)) {
+    return { sql: `negocio_id IN (${placeholders})`, values: businessIds };
+  }
+  if (table === 'turnos') {
+    return {
+      sql: `negocio_id IN (${placeholders})${isBar ? ' AND barra_id = ?' : ''}`,
+      values: isBar ? [...businessIds, user.id] : businessIds,
+    };
+  }
+  if (table === 'comandas') {
+    const turnConditions = [`negocio_id IN (${placeholders})`];
+    const values = [...businessIds];
+    if (isBar) {
+      turnConditions.push('barra_id = ?');
+      values.push(user.id);
+    }
+    const orderConditions = [`turno_id IN (SELECT id FROM turnos WHERE ${turnConditions.join(' AND ')})`];
+    if (isWaiter) {
+      orderConditions.push('mesero_id = ?');
+      values.push(user.id);
+    }
+    return { sql: orderConditions.join(' AND '), values };
+  }
+  if (['comanda_items', 'pagos'].includes(table)) {
+    const nestedConditions = [`t.${scopeByTurn}`];
+    const values = [...businessIds];
+    if (isWaiter) {
+      nestedConditions.push('c.mesero_id = ?');
+      values.push(user.id);
+    } else if (isBar) {
+      nestedConditions.push('t.barra_id = ?');
+      values.push(user.id);
+    }
+    return {
+      sql: `comanda_id IN (
+        SELECT c.id FROM comandas c
+        JOIN turnos t ON t.id = c.turno_id
+        WHERE ${nestedConditions.join(' AND ')}
+      )`,
+      values,
+    };
+  }
+  if (['gastos_turno', 'descorches'].includes(table)) {
+    return { sql: `turno_id IN (SELECT id FROM turnos WHERE ${scopeByTurn})`, values: businessIds };
+  }
+  if (table === 'novedades') {
+    return {
+      sql: `(turno_id IN (SELECT id FROM turnos WHERE ${scopeByTurn})
+        OR cierre_semanal_id IN (SELECT id FROM cierres_semanales WHERE negocio_id IN (${placeholders})))`,
+      values: [...businessIds, ...businessIds],
+    };
+  }
+  return { sql: '0 = 1', values: [] };
+}
+
+function referencedBusinessIds(table, row) {
+  const businessIds = [];
+  if (row.negocio_id !== undefined && row.negocio_id !== null) {
+    businessIds.push(String(row.negocio_id));
+  }
+  if (table === 'negocios') businessIds.push(String(row.id || ''));
+
+  if (row.turno_id) {
+    const turn = db.prepare('SELECT negocio_id FROM turnos WHERE id = ?').get(row.turno_id);
+    if (!turn) return null;
+    businessIds.push(turn.negocio_id);
+  }
+  if (row.comanda_id) {
+    const order = db.prepare(`
+      SELECT t.negocio_id FROM comandas c
+      JOIN turnos t ON t.id = c.turno_id
+      WHERE c.id = ?
+    `).get(row.comanda_id);
+    if (!order) return null;
+    businessIds.push(order.negocio_id);
+  }
+  if (row.cierre_semanal_id) {
+    const closing = db.prepare('SELECT negocio_id FROM cierres_semanales WHERE id = ?').get(row.cierre_semanal_id);
+    if (!closing) return null;
+    businessIds.push(closing.negocio_id);
+  }
+  if (row.planilla_id) {
+    const planilla = db.prepare('SELECT negocio_id FROM planillas WHERE id = ?').get(row.planilla_id);
+    if (!planilla) return null;
+    businessIds.push(planilla.negocio_id);
+  }
+  if (table === 'comandas' && row.turno_id && row.negocio_id) {
+    const turn = db.prepare('SELECT negocio_id FROM turnos WHERE id = ?').get(row.turno_id);
+    if (turn?.negocio_id !== row.negocio_id) return null;
+  }
+  return businessIds.length ? businessIds : null;
+}
+
+function rowIsInBusinessScope(table, row, user, accessibleIds = accessibleBusinessIds(user)) {
+  if (isMasterUser(user)) return true;
+  const permittedIds = new Set(accessibleIds);
+  const referencedIds = referencedBusinessIds(table, row);
+  return Boolean(referencedIds?.length
+    && referencedIds.every(id => permittedIds.has(String(id)))
+    && new Set(referencedIds.map(String)).size === 1);
 }
 
 function cleanReceiptText(value) {
@@ -812,8 +974,8 @@ router.delete('/negocios/:id', (req, res) => {
 });
 
 router.get('/network/addresses', (req, res) => {
-  if (req.authUser.role !== 'administrador' || req.authUser.email.toLowerCase() !== OWNER_EMAIL) {
-    return res.status(403).json({ error: 'Solo el administrador maestro puede consultar los enlaces de acceso.' });
+  if (!['administrador', 'gerente'].includes(String(req.authUser.role || '').toLowerCase())) {
+    return res.status(403).json({ error: 'Solo el administrador maestro o un gerente pueden consultar los enlaces de acceso.' });
   }
   const port = Number(process.env.PORT) || 3000;
   const addresses = [...new Set(Object.values(os.networkInterfaces()).flatMap(interfaces =>
@@ -830,13 +992,25 @@ router.get('/network/addresses', (req, res) => {
 router.get('/:table', tableOrFail, (req, res) => {
   if (req.params.table === 'usuarios') {
     const accounts = db.prepare('SELECT id, name, email, role, negocios, created_at FROM usuarios').all();
-    return res.json(accounts.map(encode));
+    if (isMasterUser(req.authUser)) return res.json(accounts.map(encode));
+    const allowedBusinesses = new Set(accessibleBusinessIds(req.authUser));
+    const visibleAccounts = accounts.filter(account => {
+      if (account.id === req.authUser.id) return true;
+      const accountBusinesses = accountBusinessIds(account);
+      return accountBusinesses.some(id => allowedBusinesses.has(id));
+    });
+    return res.json(visibleAccounts.map(encode));
   }
   const filters = parseFilter(req.query);
   let sql = `SELECT * FROM ${req.params.table}`;
   const params = [];
   const clauses = filters.map(item => item.sql);
   params.push(...filters.map(item => item.value));
+  const scope = businessScope(req.params.table, req.authUser);
+  if (scope) {
+    clauses.push(scope.sql);
+    params.push(...scope.values);
+  }
   if (['mesero', 'mesero_fijo'].includes(String(req.authUser.role).toLowerCase())) {
     if (req.params.table === 'comandas') {
       clauses.push('mesero_id = ?');
@@ -845,6 +1019,11 @@ router.get('/:table', tableOrFail, (req, res) => {
       clauses.push('comanda_id IN (SELECT id FROM comandas WHERE mesero_id = ?)');
       params.push(req.authUser.id);
     }
+  }
+  if (['barra', 'barra_fija'].includes(String(req.authUser.role).toLowerCase())
+    && req.params.table === 'turnos') {
+    clauses.push('barra_id = ?');
+    params.push(req.authUser.id);
   }
   if (clauses.length) {
     sql += ` WHERE ${clauses.join(' AND ')}`;
@@ -857,18 +1036,6 @@ router.get('/:table', tableOrFail, (req, res) => {
   if (Number.isInteger(limit) && limit > 0) { sql += ' LIMIT ?'; params.push(limit); }
   try {
     const results = db.prepare(sql).all(...params).map(encode);
-    if (req.params.table === 'negocios') {
-      const role = String(req.authUser.role || '').toLowerCase();
-      const isManager = role === 'gerente'
-        || (role === 'administrador' && String(req.authUser.email || '').toLowerCase() === OWNER_EMAIL);
-      if (!isManager) {
-        const assignedBusinesses = encode({ negocios: req.authUser.negocios }).negocios;
-        if (assignedBusinesses !== 'all') {
-          const allowedBusinessIds = new Set(Array.isArray(assignedBusinesses) ? assignedBusinesses : []);
-          return res.json(results.filter(business => allowedBusinessIds.has(business.id)));
-        }
-      }
-    }
     if (['mesero', 'mesero_fijo'].includes(String(req.authUser.role).toLowerCase()) && req.params.table === 'turnos') {
       return res.json(results.filter(turno => Array.isArray(turno.meseros_ids) && turno.meseros_ids.includes(req.authUser.id)));
     }
@@ -883,6 +1050,34 @@ router.post('/:table', tableOrFail, (req, res) => {
   const rows = Array.isArray(req.body) ? req.body : [req.body];
   if (!rows.length) return res.status(400).json({ error: 'Datos vacíos' });
   try {
+    const allowedBusinesses = isMasterUser(req.authUser) ? null : accessibleBusinessIds(req.authUser);
+    if (allowedBusinesses
+      && rows.some(row => !rowIsInBusinessScope(req.params.table, row, req.authUser, allowedBusinesses))) {
+      return res.status(403).json({ error: 'No tienes acceso al negocio o turno asociado a estos datos.' });
+    }
+    if (req.params.table === 'turnos') {
+      for (const row of rows) {
+        const barraId = String(row.barra_id || '');
+        const businessId = String(row.negocio_id || '');
+        if (!barraId || !businessId) {
+          return res.status(400).json({ error: 'Debes asignar un usuario de Barra al turno.' });
+        }
+        const barraAccount = db.prepare('SELECT id, role, negocios FROM usuarios WHERE id = ?').get(barraId);
+        if (!barraAccount || String(barraAccount.role).toLowerCase() !== 'barra') {
+          return res.status(400).json({ error: 'La cuenta seleccionada no tiene el rol Barra.' });
+        }
+        const assignedBusinesses = encode({ negocios: barraAccount.negocios }).negocios;
+        const hasBusinessAccess = assignedBusinesses === 'all'
+          || (Array.isArray(assignedBusinesses) && assignedBusinesses.some(id => String(id) === businessId));
+        if (!hasBusinessAccess) {
+          return res.status(403).json({ error: 'La cuenta de Barra seleccionada no está asignada a este negocio.' });
+        }
+        if (row.estado === 'abierto'
+          && db.prepare("SELECT id FROM turnos WHERE negocio_id = ? AND estado = 'abierto' LIMIT 1").get(businessId)) {
+          return res.status(409).json({ error: 'Ya existe un turno abierto para este negocio.' });
+        }
+      }
+    }
     if (['mesero', 'mesero_fijo'].includes(String(req.authUser.role).toLowerCase())
       && !rowsBelongToWaiter(req.params.table, rows, req.authUser.id)) {
       return res.status(403).json({ error: 'Solo puedes registrar operaciones de tus propias comandas.' });
@@ -920,6 +1115,10 @@ router.patch('/:table', tableOrFail, (req, res) => {
   const filters = parseFilter(req.query);
   const columns = Object.keys(req.body).filter(ident);
   if (!columns.length || !filters.length) return res.status(400).json({ error: 'Actualización inválida' });
+  if (!isMasterUser(req.authUser)
+    && columns.some(column => ['negocio_id', 'turno_id', 'comanda_id', 'cierre_semanal_id', 'planilla_id'].includes(column))) {
+    return res.status(403).json({ error: 'No se puede cambiar el negocio o turno asociado a un registro.' });
+  }
   if (req.params.table === 'usuarios') {
     if (String(req.body.role || '').toLowerCase() === 'administrador') {
       return res.status(403).json({ error: 'Solo puede existir el administrador maestro reservado.' });
@@ -931,12 +1130,38 @@ router.patch('/:table', tableOrFail, (req, res) => {
     }
   }
   try {
+    const scope = businessScope(req.params.table, req.authUser);
+    const scopedFilters = scope ? [...filters, scope] : filters;
+    const targetRows = matchingRows(req.params.table, scopedFilters);
+    if (scope && !targetRows.length) {
+      return res.status(403).json({ error: 'No tienes acceso a los registros de este negocio o turno.' });
+    }
+    if (['barra', 'barra_fija'].includes(String(req.authUser.role).toLowerCase())
+      && req.params.table === 'turnos') {
+      const targetTurns = targetRows;
+      if (!targetTurns.length || targetTurns.some(turno => String(turno.barra_id || '') !== String(req.authUser.id))) {
+        return res.status(403).json({ error: 'Solo el usuario de Barra asignado al turno puede modificarlo.' });
+      }
+    }
     if (['mesero', 'mesero_fijo'].includes(String(req.authUser.role).toLowerCase())
-      && !rowsBelongToWaiter(req.params.table, matchingRows(req.params.table, filters), req.authUser.id)) {
+      && !rowsBelongToWaiter(req.params.table, targetRows, req.authUser.id)) {
       return res.status(403).json({ error: 'Solo puedes modificar tus propias comandas.' });
     }
-    const sql = `UPDATE ${req.params.table} SET ${columns.map(column => `${column} = ?`).join(', ')} WHERE ${filters.map(item => item.sql).join(' AND ')}`;
-    db.prepare(sql).run(...columns.map(column => decode(req.body)[column] ?? null), ...filters.map(item => item.value));
+    const values = decode(req.body);
+    if (!isMasterUser(req.authUser)
+      && targetRows.some(row => !rowIsInBusinessScope(
+        req.params.table,
+        { ...row, ...values },
+        req.authUser,
+      ))) {
+      return res.status(403).json({ error: 'La actualización no puede mover datos fuera del negocio autorizado.' });
+    }
+    const whereClauses = scopedFilters.map(item => item.sql);
+    const sql = `UPDATE ${req.params.table} SET ${columns.map(column => `${column} = ?`).join(', ')} WHERE ${whereClauses.join(' AND ')}`;
+    db.prepare(sql).run(
+      ...columns.map(column => values[column] ?? null),
+      ...scopedFilters.flatMap(item => item.values || [item.value]),
+    );
     res.json({ ok: true });
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
@@ -944,9 +1169,11 @@ router.patch('/:table', tableOrFail, (req, res) => {
 router.delete('/:table', tableOrFail, (req, res) => {
   const filters = parseFilter(req.query);
   if (!filters.length) return res.status(400).json({ error: 'Eliminación inválida' });
+  const scope = businessScope(req.params.table, req.authUser);
+  const scopedFilters = scope ? [...filters, scope] : filters;
   if (['mesero', 'mesero_fijo'].includes(String(req.authUser.role).toLowerCase())) {
     try {
-      if (!rowsBelongToWaiter(req.params.table, matchingRows(req.params.table, filters), req.authUser.id)) {
+      if (!rowsBelongToWaiter(req.params.table, matchingRows(req.params.table, scopedFilters), req.authUser.id)) {
         return res.status(403).json({ error: 'Solo puedes eliminar productos de tus propias comandas.' });
       }
     } catch (error) {
@@ -962,7 +1189,12 @@ router.delete('/:table', tableOrFail, (req, res) => {
     }
   }
   try {
-    db.prepare(`DELETE FROM ${req.params.table} WHERE ${filters.map(item => item.sql).join(' AND ')}`).run(...filters.map(item => item.value));
+    const targetRows = matchingRows(req.params.table, scopedFilters);
+    if (scope && !targetRows.length) {
+      return res.status(403).json({ error: 'No tienes acceso a los registros de este negocio o turno.' });
+    }
+    db.prepare(`DELETE FROM ${req.params.table} WHERE ${scopedFilters.map(item => item.sql).join(' AND ')}`)
+      .run(...scopedFilters.flatMap(item => item.values || [item.value]));
     res.json({ ok: true });
   } catch (error) { res.status(400).json({ error: error.message }); }
 });

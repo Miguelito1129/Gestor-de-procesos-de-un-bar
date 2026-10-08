@@ -57,7 +57,7 @@ export default function LoginScreen() {
     <div style={{minHeight:'100vh',background:C.bg,display:'flex',alignItems:'center',justifyContent:'center',padding:'1rem'}}>
       <div style={{width:'min(400px,100%)',background:C.card,border:`1px solid ${C.border}`,borderRadius:16,padding:'2rem'}}>
         <div style={{textAlign:'center',marginBottom:'1.5rem'}}>
-          <div style={{fontSize:36,marginBottom:8}}>▸</div>
+          <img src="/gestionbar-logo.png" alt="GestiónBar" style={{display:'block',width:96,height:90,objectFit:'contain',margin:'0 auto 8px'}}/>
           <div style={{fontSize:24,fontWeight:900,color:C.amber,letterSpacing:'-0.5px'}}>GestiónBar</div>
           <div style={{fontSize:12,color:C.sub,marginTop:4}}>Plataforma de gestión de negocios</div>
         </div>
