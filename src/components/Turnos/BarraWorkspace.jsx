@@ -1,20 +1,29 @@
 import { useEffect, useRef, useState } from "react";
 import { C, s, COP } from "../../constants/theme.js";
-import { localFetch, localInsert, localUpdate } from "../../lib/localApi.js";
-import { uid } from "../../utils/helpers.js";
+import {
+  localDispatchOrder,
+  localFetch,
+  localPrintOrder,
+  localRejectOrder,
+  localRegisterInventoryIntake,
+  localUpdate,
+} from "../../lib/localApi.js";
 import { formatLocalTime } from "../../utils/dateTime.js";
 import { Badge, Metric, SectionTitle } from "../common/index.jsx";
+import { OrderPageTabs, visibleOrderPage } from "./OrderPagination.jsx";
 import { useAuth } from "../../hooks/useAuth.jsx";
 import { useTurnoData } from "../../hooks/useTurnoData.js";
 
 const STATUS_LABEL = {
   enviada: "Esperando autorización",
-  entregada_falta_pago: "Entregado · falta pago",
+  no_autorizada: "No autorizada por Barra",
+  entregada_falta_pago: "Entregado (pedido anterior)",
   pagada: "Pagado",
   cancelada: "Cancelado",
 };
 const STATUS_COLOR = {
   enviada: C.amber,
+  no_autorizada: C.sub,
   entregada_falta_pago: C.amber,
   pagada: C.green,
   cancelada: C.red,
@@ -38,27 +47,31 @@ const promotionTypesOf = value => {
 };
 const STATUS_GROUPS = [
   { id: "enviada", title: "Pendientes por autorizar", description: "Pedidos nuevos que esperan revisión de stock y autorización." },
-  { id: "entregada_falta_pago", title: "Entregados · falta pago", description: "Pedidos despachados que esperan confirmación de pago del mesero." },
-  { id: "pagada", title: "Pagados", description: "Pedidos cuyo pago ya fue confirmado." },
+  { id: "pagada", title: "Pagados y entregados", description: "Pedidos despachados y pagados." },
   { id: "cancelada", title: "Cancelados", description: "Pedidos cancelados; no cuentan como ventas." },
   { id: "otros", title: "Otros estados", description: "Pedidos con un estado distinto a los habituales." },
 ];
+const INVENTORY_INTAKE_REASONS = ["Solicitud a proveedor", "Préstamo"];
 
-export default function BarraWorkspace({ negocio, userName }) {
+export default function BarraWorkspace({ negocio, userName, userId }) {
   const { users } = useAuth();
   const { turno, setTurno, comandas, setComandas, productos, setProductos } = useTurnoData(negocio.id);
-  const [entry, setEntry] = useState({ productoId: "", cantidad: "", justificacion: "", comprobante: "" });
-  const [entryFileName, setEntryFileName] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [expandedIds, setExpandedIds] = useState(() => new Set());
+  const [rejectingOrderId, setRejectingOrderId] = useState("");
   const [itemDetails, setItemDetails] = useState({});
   const loadingDetails = useRef(new Set());
   const loadedOrderRevisions = useRef(new Map());
   const autoExpandedPending = useRef(new Set());
   const [meseroFilter, setMeseroFilter] = useState("todos");
   const [activeStatus, setActiveStatus] = useState("enviada");
+  const [orderPage, setOrderPage] = useState(0);
   const [activeModule, setActiveModule] = useState("orders");
+  const [intakeDescription, setIntakeDescription] = useState("");
+  const [intakeItems, setIntakeItems] = useState([{ producto_id: "", cantidad: "1" }]);
+  const [intakeMessage, setIntakeMessage] = useState("");
+  const [savingIntake, setSavingIntake] = useState(false);
   const [savingWaiters, setSavingWaiters] = useState(false);
   const [waiterAccessMessage, setWaiterAccessMessage] = useState("");
   const authorizedMeseroIds = Array.isArray(turno?.meseros_ids) ? turno.meseros_ids.map(String) : [];
@@ -91,15 +104,43 @@ export default function BarraWorkspace({ negocio, userName }) {
   const comandasPorMesero = meseroId => comandas.filter(comanda =>
     (comanda.mesero_id || comanda.mesero_nombre || "sin_mesero") === meseroId
   ).length;
-  const pending = comandasVisibles.filter(comanda => comanda.estado === "enviada").length;
+  const allPendingOrders = comandasVisibles.filter(comanda => comanda.estado === "enviada");
+  const pending = allPendingOrders.length;
   const getStatusOrders = statusId => comandasVisibles.filter(comanda =>
     statusId === "otros"
       ? !STATUS_GROUPS.some(group => group.id !== "otros" && group.id === comanda.estado)
       : comanda.estado === statusId
   );
+  const statusOrders = getStatusOrders(activeStatus);
+  const visibleStatusOrders = visibleOrderPage(statusOrders, activeStatus, orderPage);
   const ventasTotal = comandasVisibles
-    .filter(comanda => comanda.estado !== "cancelada")
+    .filter(comanda => comanda.estado === "pagada")
     .reduce((sum, comanda) => sum + Number(comanda.total || 0), 0);
+
+  const rejectOrder = async comanda => {
+    if (rejectingOrderId || comanda.estado !== "enviada") return;
+    setRejectingOrderId(comanda.id);
+    setMessage("");
+    try {
+      const result = await localRejectOrder(comanda.id);
+      const updated = result.comanda;
+      if (!updated || updated.estado !== "no_autorizada") {
+        throw new Error("La respuesta del servidor no confirmó el estado de no autorizada.");
+      }
+      setExpandedIds(current => {
+        const next = new Set(current);
+        next.delete(comanda.id);
+        return next;
+      });
+      setComandas(current => current.map(order => order.id === comanda.id ? { ...order, ...updated } : order));
+      setMessage(`Comanda #${comanda.consecutivo || "—"} marcada como no autorizada. Mesero puede consultarla en «Otros estados».`);
+      setOrderPage(0);
+    } catch (error) {
+      setMessage(error.message || "No fue posible marcar la comanda como no autorizada.");
+    } finally {
+      setRejectingOrderId("");
+    }
+  };
 
   const toggleWaiterAccess = async (account, enabled) => {
     if (!turno || savingWaiters) return;
@@ -118,8 +159,53 @@ export default function BarraWorkspace({ negocio, userName }) {
     setSavingWaiters(false);
   };
 
+  const updateIntakeItem = (index, changes) => {
+    setIntakeItems(current => current.map((item, itemIndex) =>
+      itemIndex === index ? { ...item, ...changes } : item
+    ));
+  };
+
+  const registerInventoryIntake = async event => {
+    event.preventDefault();
+    if (!turno || savingIntake) return;
+    const productsToReceive = intakeItems.map(item => ({
+      producto_id: item.producto_id,
+      cantidad: Number(item.cantidad),
+    }));
+    if (!INVENTORY_INTAKE_REASONS.includes(intakeDescription)
+      || !productsToReceive.length
+      || productsToReceive.some(item => !item.producto_id || !Number.isSafeInteger(item.cantidad) || item.cantidad <= 0)) {
+      setIntakeMessage("Selecciona el motivo del ingreso y agrega productos existentes con cantidades enteras mayores que cero.");
+      return;
+    }
+    setSavingIntake(true);
+    setIntakeMessage("");
+    try {
+      const result = await localRegisterInventoryIntake(turno.id, {
+        descripcion: intakeDescription.trim(),
+        productos: productsToReceive,
+      });
+      setProductos(current => current.map(product => {
+        const received = result.productos?.find(item => item.producto_id === product.id);
+        return received ? { ...product, stock: received.stock } : product;
+      }));
+      setIntakeDescription("");
+      setIntakeItems([{ producto_id: "", cantidad: "1" }]);
+      setIntakeMessage(`✓ Ingreso registrado: ${result.productos.map(item => `${item.nombre} +${item.cantidad}`).join(", ")}.`);
+    } catch (error) {
+      setIntakeMessage(error.message || "No fue posible registrar el ingreso.");
+    } finally {
+      setSavingIntake(false);
+    }
+  };
+
   const getStockCheck = comanda => {
     const details = itemDetails[comanda.id] || [];
+    const requestedByProduct = details.reduce((totals, item) => {
+      const productId = String(item.producto_id);
+      totals.set(productId, (totals.get(productId) || 0) + Number(item.cantidad || 0));
+      return totals;
+    }, new Map());
     return details.map(item => {
       const product = productos.find(row => row.id === item.producto_id);
       const stock = product ? Number(product.stock || 0) : 0;
@@ -127,8 +213,8 @@ export default function BarraWorkspace({ negocio, userName }) {
       return {
         ...item,
         stock,
-        requested,
-        available: Boolean(product) && stock >= requested,
+        requested: requestedByProduct.get(String(item.producto_id)) || requested,
+        available: Boolean(product) && stock >= (requestedByProduct.get(String(item.producto_id)) || requested),
       };
     });
   };
@@ -158,7 +244,9 @@ export default function BarraWorkspace({ negocio, userName }) {
   };
 
   useEffect(() => {
-    const pendingOrders = comandas.filter(comanda => comanda.estado === "enviada");
+    const pendingOrders = comandas.filter(comanda =>
+      comanda.estado === "enviada"
+    );
     const arrivingOrders = pendingOrders.filter(comanda => !autoExpandedPending.current.has(comanda.id));
     if (arrivingOrders.length) {
       arrivingOrders.forEach(comanda => autoExpandedPending.current.add(comanda.id));
@@ -196,99 +284,47 @@ export default function BarraWorkspace({ negocio, userName }) {
     if (busy || comanda.estado !== "enviada") return;
     setBusy(true);
     setMessage("");
-    const [details, promociones] = await Promise.all([
-      localFetch("comanda_items", `comanda_id=eq.${comanda.id}&select=*`),
-      localFetch("promociones", `negocio_id=eq.${negocio.id}&activo=eq.true&select=*`),
-    ]);
-    const deductions = new Map();
-    (details || []).forEach(detail => deductions.set(detail.producto_id, Number(detail.cantidad || 0)));
-    (details || []).forEach(detail => {
-      (promociones || []).filter(promotion => promotion.tipo === "cortesia" && promotion.producto_principal_id === detail.producto_id).forEach(promotion => {
-        const quantity = Number(detail.cantidad || 0) * Math.max(1, Number(promotion.cantidad_cortesia) || 1);
-        deductions.set(promotion.producto_cortesia_id, (deductions.get(promotion.producto_cortesia_id) || 0) + quantity);
-      });
-    });
-    const insufficient = [...deductions].some(([productId, quantity]) => {
-      const product = productos.find(item => item.id === productId);
-      return !product || Number(product.stock) < quantity;
-    });
-    if (insufficient) {
-      setMessage("Stock insuficiente para despachar esta comanda.");
-      setBusy(false);
-      return;
-    }
-    const results = [];
-    for (const [productId, quantity] of deductions) {
-      const product = productos.find(item => item.id === productId);
-      const newStock = Number(product.stock) - quantity;
-      const stockOk = await localUpdate("productos", { id: product.id }, { stock: newStock });
-      const movOk = await localInsert("movimientos_inventario", {
-        id: uid(), negocio_id: negocio.id, turno_id: turno.id, producto_id: product.id,
-        tipo: "venta", cantidad: -quantity, motivo: `Comanda ${comanda.id}`,
-      });
-      results.push({ productoId: product.id, newStock, ok: stockOk && movOk });
-    }
-    const allOk = results.every(result => result.ok);
-    const dispatched = allOk && await localUpdate("comandas", { id: comanda.id }, {
-      estado: "entregada_falta_pago",
-      confirmado_en: new Date().toISOString(),
-      despachado_en: new Date().toISOString(),
-    });
-    if (!dispatched) {
-      setMessage("No se pudo completar el despacho.");
-    } else {
+    try {
+      const result = await localDispatchOrder(comanda.id);
       setProductos(current => current.map(product => {
-        const result = results.find(item => item.productoId === product.id);
-        return result ? { ...product, stock: result.newStock } : product;
+        const updated = result.stock?.find(item => item.producto_id === product.id);
+        return updated ? { ...product, stock: updated.stock } : product;
       }));
-      setComandas(current => current.map(row => row.id === comanda.id ? { ...row, estado: "entregada_falta_pago" } : row));
-      setMessage("✓ Comanda entregada. Queda pendiente de confirmar el pago.");
+      setComandas(current => current.map(row => row.id === comanda.id
+        ? { ...row, ...(result.comanda || {}), estado: "pagada" }
+        : row));
+      setItemDetails(current => {
+        const courtesyRows = (result.comanda?.pagos_cortesia || []).map(item => ({
+          id: `courtesy-${item.producto_id}`,
+          producto_id: item.producto_id,
+          cantidad: item.cantidad,
+          precio_unitario: 0,
+          descuento: 0,
+          es_cortesia: 1,
+          promociones_aplicadas: ["cortesia"],
+          nombre: productos.find(product => product.id === item.producto_id)?.name || "Producto de cortesía",
+        }));
+        return { ...current, [comanda.id]: [...(current[comanda.id] || []), ...courtesyRows] };
+      });
+      try {
+        const printResult = await localPrintOrder(comanda.id, userId);
+        const warning = result.warnings?.length ? ` ${result.warnings.join(" ")}` : "";
+        setMessage(`✓ Comanda entregada y pagada. ${printResult?.message || "Ticket enviado a imprimir."}${warning}`);
+      } catch (error) {
+        const warning = result.warnings?.length ? ` ${result.warnings.join(" ")}` : "";
+        setMessage(`✓ Comanda entregada y pagada. No se pudo imprimir el ticket: ${error.message}${warning}`);
+      }
+    } catch (error) {
+      setMessage(error.message || "No se pudo completar el despacho.");
+    } finally {
+      setBusy(false);
     }
-    setBusy(false);
-  };
-
-  const registerEntry = async () => {
-    const quantity = Number(entry.cantidad);
-    const product = productos.find(item => item.id === entry.productoId);
-    if (busy) return;
-    if (!turno) { setMessage("No hay turno abierto."); return; }
-    if (!product || !Number.isInteger(quantity) || quantity < 1) { setMessage("Selecciona producto y cantidad válida."); return; }
-    if (!entry.justificacion.trim()) { setMessage("La justificación es obligatoria."); return; }
-    setBusy(true);
-    setMessage("");
-    const movementCreated = await localInsert("movimientos_inventario", {
-      id: uid(), negocio_id: negocio.id, turno_id: turno.id, producto_id: product.id,
-      tipo: "entrada_urgente", cantidad: quantity, motivo: entry.justificacion.trim(),
-      comprobante_url: entry.comprobante || null, creado_por: userName || null,
-    });
-    const nextStock = Number(product.stock || 0) + quantity;
-    const stockUpdated = movementCreated && await localUpdate("productos", { id: product.id }, { stock: nextStock });
-    if (!stockUpdated) {
-      setMessage("No fue posible registrar la entrada urgente.");
-    } else {
-      setProductos(current => current.map(item => item.id === product.id ? { ...item, stock: nextStock } : item));
-      setEntry({ productoId: "", cantidad: "", justificacion: "", comprobante: "" });
-      setEntryFileName("");
-      setMessage("✓ Entrada urgente registrada.");
-    }
-    setBusy(false);
-  };
-
-  const handleFile = event => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    if (file.size > 1500000) { setMessage("Archivo máximo 1.5 MB."); event.target.value = ""; return; }
-    const reader = new FileReader();
-    reader.onload = () => setEntry(current => ({ ...current, comprobante: String(reader.result || "") }));
-    reader.onerror = () => setMessage("No fue posible leer el archivo.");
-    reader.readAsDataURL(file);
-    setEntryFileName(file.name);
   };
 
   return (
     <div>
       <SectionTitle>🍸 Cola de barra — {negocio.name}</SectionTitle>
-      <p style={{ color: C.sub, fontSize: 13, marginTop: -10, marginBottom: 16 }}>Confirma pagos, despacha pedidos y gestiona el inventario.</p>
+      <p style={{ color: C.sub, fontSize: 13, marginTop: -10, marginBottom: 16 }}>Autoriza y entrega pedidos.</p>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, marginBottom: 16 }}>
         <Metric label="Turno" value={turno ? "Abierto" : "Sin turno"} color={turno ? C.green : C.red} icon="⏱" />
         <Metric label="Pendientes" value={pending} color={pending > 0 ? C.amber : C.sub} icon="🧾" />
@@ -296,7 +332,10 @@ export default function BarraWorkspace({ negocio, userName }) {
       </div>
       <div className="barra-module-tabs" role="tablist" aria-label="Módulos de Barra">
         <button type="button" role="tab" aria-selected={activeModule === "orders"} className={activeModule === "orders" ? "is-active" : ""} onClick={() => setActiveModule("orders")}>
-          Comandas
+          Cola de Barra
+        </button>
+        <button type="button" role="tab" aria-selected={activeModule === "income"} className={activeModule === "income" ? "is-active" : ""} onClick={() => { setActiveModule("income"); setIntakeMessage(""); }}>
+          Ingresos
         </button>
         <button type="button" role="tab" aria-selected={activeModule === "waiters"} className={activeModule === "waiters" ? "is-active" : ""} onClick={() => setActiveModule("waiters")}>
           Meseros del turno <b>{authorizedMeseroIds.length}/{negocioMeseros.length}</b>
@@ -342,27 +381,85 @@ export default function BarraWorkspace({ negocio, userName }) {
               })}
             </div>}
         </section>
+      ) : activeModule === "income" ? (
+        <section className="barra-inventory-intake" aria-labelledby="barra-inventory-intake-title">
+          <header className="barra-waiter-access__heading">
+            <div>
+              <h2 id="barra-inventory-intake-title">Ingreso de productos al inventario</h2>
+              <p>Selecciona el motivo del ingreso y agrega uno o más productos existentes.</p>
+            </div>
+          </header>
+          <form onSubmit={event => void registerInventoryIntake(event)}>
+            <label className="barra-inventory-intake__description">
+              <span>Motivo del ingreso</span>
+              <select
+                value={intakeDescription}
+                onChange={event => setIntakeDescription(event.target.value)}
+                disabled={savingIntake}
+                required
+              >
+                <option value="">Seleccionar motivo</option>
+                {INVENTORY_INTAKE_REASONS.map(reason => (
+                  <option key={reason} value={reason}>{reason}</option>
+                ))}
+              </select>
+            </label>
+            <div className="barra-inventory-intake__items">
+              {intakeItems.map((item, index) => (
+                <div className="barra-inventory-intake__row" key={index}>
+                  <label>
+                    <span>Producto</span>
+                    <select
+                      value={item.producto_id}
+                      onChange={event => updateIntakeItem(index, { producto_id: event.target.value })}
+                      disabled={savingIntake}
+                      required
+                    >
+                      <option value="">Seleccionar del inventario</option>
+                      {productos.map(product => (
+                        <option key={product.id} value={product.id}>{product.name} · stock {product.stock}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Cantidad recibida</span>
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={item.cantidad}
+                      onChange={event => updateIntakeItem(index, { cantidad: event.target.value })}
+                      disabled={savingIntake}
+                      required
+                    />
+                  </label>
+                  {intakeItems.length > 1 && (
+                    <button type="button" className="barra-inventory-intake__remove" disabled={savingIntake} onClick={() => setIntakeItems(current => current.filter((_, itemIndex) => itemIndex !== index))} aria-label="Quitar producto">
+                      Quitar
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="barra-inventory-intake__actions">
+              <button type="button" className="barra-inventory-intake__add" disabled={savingIntake} onClick={() => setIntakeItems(current => [...current, { producto_id: "", cantidad: "1" }])}>
+                + Agregar otro producto
+              </button>
+              <button type="submit" style={s.btn("success")} disabled={savingIntake || !productos.length}>
+                {savingIntake ? "Registrando ingreso…" : "Registrar ingreso"}
+              </button>
+            </div>
+          </form>
+          {intakeMessage && (
+            <div className={`barra-inventory-intake__message${intakeMessage.startsWith("✓") ? " is-success" : " is-error"}`} role="status">
+              {intakeMessage}
+            </div>
+          )}
+        </section>
       ) : <>
-      <details style={{ ...s.card, marginBottom: 16 }}>
-        <summary style={{ cursor: "pointer", fontWeight: 700 }}>➕ Entrada urgente de inventario</summary>
-        <div style={{ color: C.sub, fontSize: 12, margin: "8px 0 12px" }}>Justificación obligatoria. Factura opcional (máx. 1.5 MB).</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 110px", gap: 8, marginBottom: 8 }}>
-          <select style={s.sel} value={entry.productoId} onChange={event => setEntry(current => ({ ...current, productoId: event.target.value }))}>
-            <option value="">Producto recibido</option>
-            {productos.map(product => <option key={product.id} value={product.id}>{product.name} (stock: {product.stock})</option>)}
-          </select>
-          <input style={s.inp} type="number" min="1" step="1" placeholder="Cantidad" value={entry.cantidad} onChange={event => setEntry(current => ({ ...current, cantidad: event.target.value }))} />
-        </div>
-        <textarea style={{ ...s.inp, minHeight: 64, resize: "vertical", marginBottom: 8 }} placeholder="Justificación obligatoria" value={entry.justificacion} onChange={event => setEntry(current => ({ ...current, justificacion: event.target.value }))} />
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <label style={{ fontSize: 13, color: C.sub, cursor: "pointer" }}>📎 {entryFileName || "Adjuntar factura"}<input type="file" accept="image/*,.pdf" onChange={handleFile} style={{ display: "none" }} /></label>
-          <button style={{ ...s.btn("primary"), marginLeft: "auto" }} onClick={registerEntry} disabled={busy}>Registrar entrada</button>
-        </div>
-      </details>
       <div style={s.card}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
           <div style={{ fontWeight: 700, flex: 1 }}>Comandas</div>
-          <span style={{ color: C.sub, fontSize: 12 }}>La barra entrega; el mesero confirma el pago.</span>
         </div>
         <div className="barra-waiter-filter">
           <div className="barra-waiter-filter__label">
@@ -373,7 +470,10 @@ export default function BarraWorkspace({ negocio, userName }) {
             <button
               type="button"
               className={`barra-waiter-chip ${meseroFilter === "todos" ? "is-active" : ""}`}
-              onClick={() => setMeseroFilter("todos")}
+              onClick={() => {
+                setMeseroFilter("todos");
+                setOrderPage(0);
+              }}
             >
               <span>Todos</span><b>{comandas.length}</b>
             </button>
@@ -382,14 +482,17 @@ export default function BarraWorkspace({ negocio, userName }) {
                 key={mesero.id}
                 type="button"
                 className={`barra-waiter-chip ${meseroFilter === mesero.id ? "is-active" : ""}`}
-                onClick={() => setMeseroFilter(mesero.id)}
+                onClick={() => {
+                  setMeseroFilter(mesero.id);
+                  setOrderPage(0);
+                }}
               >
                 <span>{mesero.nombre}</span><b>{comandasPorMesero(mesero.id)}</b>
               </button>
             ))}
           </div>
         </div>
-        {message && <div style={{ color: message.startsWith("✓") ? C.green : C.red, fontSize: 12, marginBottom: 10 }}>{message}</div>}
+        {message && <div style={{ color: message.startsWith("✓") ? (message.includes("No se pudo imprimir") ? C.amber : C.green) : C.red, fontSize: 12, marginBottom: 10 }}>{message}</div>}
         {!turno && <p style={{ color: C.sub, fontSize: 13 }}>No hay turno abierto.</p>}
         {turno && comandas.length === 0 && <p style={{ color: C.sub, fontSize: 13 }}>Sin comandas en este turno.</p>}
         {turno && comandas.length > 0 && comandasVisibles.length === 0 && <p style={{ color: C.sub, fontSize: 13 }}>No hay comandas de este mesero.</p>}
@@ -405,7 +508,10 @@ export default function BarraWorkspace({ negocio, userName }) {
                 aria-selected={activeStatus === group.id}
                 aria-controls="barra-orders-panel"
                 className={`barra-order-tab barra-order-tab--${group.id}${activeStatus === group.id ? " is-active" : ""}`}
-                onClick={() => setActiveStatus(group.id)}
+                onClick={() => {
+                  setActiveStatus(group.id);
+                  setOrderPage(0);
+                }}
               >
                 <span>{group.title}</span><b>{count}</b>
               </button>
@@ -423,12 +529,20 @@ export default function BarraWorkspace({ negocio, userName }) {
               <h3>{STATUS_GROUPS.find(group => group.id === activeStatus)?.title}</h3>
               <p>{STATUS_GROUPS.find(group => group.id === activeStatus)?.description}</p>
             </div>
-            <span>{getStatusOrders(activeStatus).length}</span>
+            <span>{statusOrders.length}</span>
           </header>
-          {!getStatusOrders(activeStatus).length && (
+          <OrderPageTabs
+            status={activeStatus}
+            orderCount={statusOrders.length}
+            page={orderPage}
+            onPageChange={setOrderPage}
+            idPrefix="barra-orders"
+          />
+          {!statusOrders.length && (
             <p className="barra-order-empty">No hay comandas en esta categoría.</p>
           )}
-          {getStatusOrders(activeStatus).map(comanda => {
+          <div className={["pagada", "cancelada"].includes(activeStatus) ? "order-page-grid" : undefined}>
+          {visibleStatusOrders.map(comanda => {
             const stockCheck = getStockCheck(comanda);
             const hasInsufficientStock = stockCheck.length > 0 && stockCheck.some(item => !item.available);
             return (
@@ -455,6 +569,17 @@ export default function BarraWorkspace({ negocio, userName }) {
                     >
                       {expandedIds.has(comanda.id) ? "Ocultar productos" : "Ver productos"}
                     </button>
+                    {comanda.estado === "enviada" && (
+                      <button
+                        className="barra-order__details-button"
+                        style={{ ...s.btn("ghost"), padding: "6px 10px" }}
+                        type="button"
+                        disabled={Boolean(rejectingOrderId)}
+                        onClick={() => void rejectOrder(comanda)}
+                      >
+                        {rejectingOrderId === comanda.id ? "Guardando…" : "No autorizar"}
+                      </button>
+                    )}
                     <div className="barra-order__authorize-slot">
                       {comanda.estado === "enviada" ? (
                         <button
@@ -512,6 +637,7 @@ export default function BarraWorkspace({ negocio, userName }) {
               </div>
             );
           })}
+          </div>
         </section>
       </div>
       </>}

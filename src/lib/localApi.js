@@ -91,6 +91,57 @@ export async function localInsertDetailed(table, data) {
   }
 }
 
+export async function localRegisterSupplyExpense(data) {
+  const response = await fetch(`${LOCAL_API_URL}/expenses/stock`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify(data),
+  });
+  const result = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(result?.error || `No fue posible registrar la compra de insumos (${response.status}).`);
+  }
+  return result;
+}
+
+export async function localRegisterInventoryIntake(turnoId, data) {
+  const response = await fetch(`${LOCAL_API_URL}/turnos/${encodeURIComponent(turnoId)}/inventory-intake`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify(data),
+  });
+  const result = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(result?.error || `No fue posible registrar el ingreso de inventario (${response.status}).`);
+  }
+  return result;
+}
+
+export async function localUpdateTurnInventoryOpening(turnoId, data) {
+  const response = await fetch(`${LOCAL_API_URL}/turnos/${encodeURIComponent(turnoId)}/inventory-opening`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify(data),
+  });
+  const result = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(result?.error || `No fue posible corregir el inventario inicial (${response.status}).`);
+  }
+  return result;
+}
+
+export async function localRejectOrder(comandaId) {
+  const response = await fetch(`${LOCAL_API_URL}/comandas/${encodeURIComponent(comandaId)}/reject`, {
+    method: 'POST',
+    headers: headers(),
+  });
+  const result = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(result?.error || `No fue posible marcar la comanda como no autorizada (${response.status}).`);
+  }
+  return result;
+}
+
 export async function localInsert(table, data) {
   const result = await localInsertDetailed(table, data);
   return result.ok;
@@ -184,6 +235,18 @@ export async function localPrintOrder(comandaId, userId) {
       throw new Error("Impresora sin conexión o puerto Bluetooth no disponible. Revisa Printer001 y vuelve a intentarlo.");
     }
     throw new Error(`No fue posible imprimir el pedido (HTTP ${response.status}).`);
+  }
+  return result;
+}
+
+export async function localDispatchOrder(comandaId) {
+  const response = await fetch(`${LOCAL_API_URL}/comandas/${encodeURIComponent(comandaId)}/dispatch`, {
+    method: 'POST',
+    headers: headers(),
+  });
+  const result = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(result?.error || `No fue posible entregar la comanda (HTTP ${response.status}).`);
   }
   return result;
 }

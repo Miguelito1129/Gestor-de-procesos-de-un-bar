@@ -7,13 +7,14 @@ import { Badge } from "../common/index.jsx";
 const EMPTY_FORM = {
   nombre: "",
   tipo: "2x1",
+  aplicar_por_categoria: false,
   producto_principal_id: "",
+  categoria_principal: "",
   producto_cortesia_id: "",
   cantidad_compra: "2",
   cantidad_cortesia: "1",
   precio_promocional: "",
 };
-const COURTESY_NAMES = ["agua", "gatorade", "gaseosa"];
 const PROMOTION_TYPES = {
   "2x1": { label: "2 × 1", icon: "✦", className: "two-for-one" },
   cortesia: { label: "Producto + cortesía", icon: "🎁", className: "courtesy" },
@@ -22,7 +23,9 @@ const PROMOTION_TYPES = {
 };
 
 const promotionDescription = (promotion, names) => {
-  const main = names.get(promotion.producto_principal_id) || "Producto eliminado";
+  const main = promotion.categoria_principal
+    ? `productos de categoría ${promotion.categoria_principal}`
+    : names.get(promotion.producto_principal_id) || "Producto eliminado";
   if (promotion.tipo === "2x1") return `Lleva ${promotion.cantidad_compra || 2} de ${main} y paga 1.`;
   if (promotion.tipo === "precio_especial") return `${main} por precio especial de $${Number(promotion.precio_promocional || 0).toLocaleString("es-CO")}.`;
   if (promotion.tipo === "combo") {
@@ -33,18 +36,20 @@ const promotionDescription = (promotion, names) => {
       })();
     return comboItems.map(item => `${item.cantidad} × ${names.get(item.producto_id) || "Producto eliminado"}`).join(" + ");
   }
-  const gift = names.get(promotion.producto_cortesia_id) || "producto de cortesía";
+  const gift = names.get(promotion.producto_cortesia_id) || "producto de cortesía no disponible";
   return `Por cada ${main}, entrega ${promotion.cantidad_cortesia || 1} ${gift}.`;
 };
 
 export default function Promociones({ negocio }) {
   const [promociones, setPromociones] = useState([]);
   const [productos, setProductos] = useState([]);
+  const [categorias, setCategorias] = useState([]);
   const [form, setForm] = useState(EMPTY_FORM);
   const [showForm, setShowForm] = useState(false);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [comboItems, setComboItems] = useState([{ producto_id: "", cantidad: "1" }, { producto_id: "", cantidad: "1" }]);
+  const [giftReplacements, setGiftReplacements] = useState({});
 
   const productNames = useMemo(() => new Map(productos.map(product => [product.id, product.name])), [productos]);
 
@@ -52,10 +57,11 @@ export default function Promociones({ negocio }) {
     setLoading(true);
     const [promoRows, productRows] = await Promise.all([
       localFetch("promociones", `negocio_id=eq.${negocio.id}&select=*&order=created_at.desc`),
-      localFetch("productos", `negocio_id=eq.${negocio.id}&select=id,name,stock&order=name.asc`),
+      localFetch("productos", `negocio_id=eq.${negocio.id}&select=id,name,cat,stock&order=name.asc`),
     ]);
     setPromociones(promoRows || []);
     setProductos(productRows || []);
+    setCategorias([...new Set((productRows || []).map(product => product.cat).filter(Boolean))].sort((a, b) => a.localeCompare(b, "es")));
     setLoading(false);
   };
 
@@ -67,13 +73,19 @@ export default function Promociones({ negocio }) {
     const normalizedCombo = comboItems
       .filter(item => item.producto_id)
       .map(item => ({ producto_id: item.producto_id, cantidad: Math.max(1, Number(item.cantidad) || 1) }));
-    const mainProduct = form.tipo === "combo" ? normalizedCombo[0]?.producto_id : form.producto_principal_id;
+    const mainProduct = form.tipo === "combo"
+      ? normalizedCombo[0]?.producto_id
+      : form.aplicar_por_categoria ? "" : form.producto_principal_id;
     const comboHasDuplicate = new Set(normalizedCombo.map(item => item.producto_id)).size !== normalizedCombo.length;
     const comboPrice = Number(form.precio_promocional);
-    if (!form.nombre.trim() || !mainProduct || (requiredGift && !form.producto_cortesia_id) || (form.tipo === "combo" && (normalizedCombo.length < 2 || comboHasDuplicate || !Number.isFinite(comboPrice) || comboPrice < 0)) || (form.tipo === "precio_especial" && (!Number.isFinite(comboPrice) || comboPrice < 0))) {
+    if (!form.nombre.trim()
+      || (!mainProduct && !(form.aplicar_por_categoria && form.categoria_principal))
+      || (requiredGift && (!form.producto_cortesia_id || !productos.some(product => product.id === form.producto_cortesia_id)))
+      || (form.tipo === "combo" && (normalizedCombo.length < 2 || comboHasDuplicate || !Number.isFinite(comboPrice) || comboPrice < 0))
+      || (form.tipo === "precio_especial" && (!Number.isFinite(comboPrice) || comboPrice < 0))) {
       setMessage(form.tipo === "combo" && comboHasDuplicate
         ? "Un combo debe tener productos diferentes."
-        : "Completa el nombre, selecciona al menos dos productos diferentes y define el precio del combo.");
+        : "Completa el nombre, el producto o categoría y los datos requeridos para la promoción.");
       return;
     }
     const quantity = Math.max(2, Number(form.cantidad_compra) || 2);
@@ -81,6 +93,7 @@ export default function Promociones({ negocio }) {
     const payload = {
       id: uid(), negocio_id: negocio.id, nombre: form.nombre.trim(), tipo: form.tipo,
       producto_principal_id: mainProduct,
+      categoria_principal: form.aplicar_por_categoria ? form.categoria_principal : null,
       producto_cortesia_id: requiredGift ? form.producto_cortesia_id : null,
       cantidad_compra: quantity, cantidad_cortesia: giftQuantity, activo: true,
     };
@@ -109,13 +122,36 @@ export default function Promociones({ negocio }) {
     setPromociones(current => current.filter(item => item.id !== promotion.id));
   };
 
+  const replaceMissingGift = async promotion => {
+    const productId = giftReplacements[promotion.id];
+    if (!productId || !productos.some(product => product.id === productId)) {
+      setMessage("Selecciona un producto de cortesía existente.");
+      return;
+    }
+    const saved = await localUpdate("promociones", { id: promotion.id }, { producto_cortesia_id: productId });
+    if (!saved) {
+      setMessage("No fue posible actualizar el producto de cortesía.");
+      return;
+    }
+    const productName = productNames.get(productId);
+    setPromociones(current => current.map(item => item.id === promotion.id
+      ? { ...item, producto_cortesia_id: productId }
+      : item));
+    setGiftReplacements(current => {
+      const next = { ...current };
+      delete next[promotion.id];
+      return next;
+    });
+    setMessage(`✓ ${promotion.nombre}: cortesía actualizada a ${productName}.`);
+  };
+
   return (
     <div className="promotion-page">
       <header className="promotion-page__hero">
         <div>
           <div className="promotion-page__eyebrow"><span>✦</span> OFERTAS DEL LOCAL</div>
           <h1>Promociones</h1>
-          <p>Arma beneficios claros para tus clientes. Las promociones activas se aplican al despachar la comanda.</p>
+          <p>Arma beneficios claros para tus clientes. Las cortesías aparecen en la comanda y se registran al despacharla.</p>
         </div>
         <button
           type="button"
@@ -152,7 +188,7 @@ export default function Promociones({ negocio }) {
             <span>2×1</span><div><strong>2 × 1</strong><p>Entrega varias unidades y cobra una.</p></div>
           </article>
           <article className="promotion-guide__item promotion-guide__item--violet">
-            <span>🎁</span><div><strong>Producto + cortesía</strong><p>Incluye agua, Gatorade o gaseosa.</p></div>
+            <span>🎁</span><div><strong>Producto + cortesía</strong><p>Aplica por producto o categoría y elige cualquier producto del inventario como cortesía.</p></div>
           </article>
           <article className="promotion-guide__item promotion-guide__item--mint">
             <span>🍸</span><div><strong>Combo</strong><p>Varios productos por un precio único.</p></div>
@@ -182,13 +218,30 @@ export default function Promociones({ negocio }) {
               <option value="combo">Combo</option>
             </select>
           </div>
-          {form.tipo !== "combo" && <div>
-            <label style={s.label}>Producto principal</label>
-            <select style={s.sel} value={form.producto_principal_id} onChange={event => setForm(current => ({ ...current, producto_principal_id: event.target.value }))}>
-              <option value="">Seleccionar producto</option>
-              {productos.map(product => <option key={product.id} value={product.id}>{product.name} · stock {product.stock}</option>)}
-            </select>
-          </div>}
+          {form.tipo !== "combo" && <>
+            <div>
+              <label style={s.label}>Aplicar a</label>
+              <select style={s.sel} value={form.aplicar_por_categoria ? "categoria" : "producto"} onChange={event => setForm(current => ({ ...current, aplicar_por_categoria: event.target.value === "categoria", producto_principal_id: "", categoria_principal: "" }))}>
+                <option value="producto">Un producto</option>
+                <option value="categoria">Toda una categoría</option>
+              </select>
+            </div>
+            {form.aplicar_por_categoria
+              ? <div>
+                <label style={s.label}>Categoría del producto principal</label>
+                <select style={s.sel} value={form.categoria_principal} onChange={event => setForm(current => ({ ...current, categoria_principal: event.target.value }))}>
+                  <option value="">Seleccionar categoría</option>
+                  {categorias.map(category => <option key={category} value={category}>{category}</option>)}
+                </select>
+              </div>
+              : <div>
+                <label style={s.label}>Producto principal</label>
+                <select style={s.sel} value={form.producto_principal_id} onChange={event => setForm(current => ({ ...current, producto_principal_id: event.target.value }))}>
+                  <option value="">Seleccionar producto</option>
+                  {productos.map(product => <option key={product.id} value={product.id}>{product.name} · stock {product.stock}</option>)}
+                </select>
+              </div>}
+          </>}
           {form.tipo === "2x1" ? (
             <div>
               <label style={s.label}>Unidades que salen</label>
@@ -198,8 +251,8 @@ export default function Promociones({ negocio }) {
             <div>
               <label style={s.label}>Producto de cortesía</label>
               <select style={s.sel} value={form.producto_cortesia_id} onChange={event => setForm(current => ({ ...current, producto_cortesia_id: event.target.value }))}>
-                <option value="">Seleccionar cortesía</option>
-                {productos.filter(product => product.id !== form.producto_principal_id && COURTESY_NAMES.some(name => product.name.toLowerCase().includes(name))).map(product => <option key={product.id} value={product.id}>{product.name} · stock {product.stock}</option>)}
+                <option value="">Seleccionar producto de cortesía</option>
+                {productos.map(product => <option key={product.id} value={product.id}>{product.name} · {product.cat || "Sin categoría"} · stock {product.stock}</option>)}
               </select>
             </div>
             <div>
@@ -254,6 +307,24 @@ export default function Promociones({ negocio }) {
             </div>
             <div className="promotion-card__details">
               <p>{promotionDescription(promotion, productNames)}</p>
+              {promotion.tipo === "cortesia" && !productNames.has(promotion.producto_cortesia_id) && (
+                <div role="alert" style={{ marginTop: 10, padding: 10, borderRadius: 8, border: `1px solid ${C.amber}70`, color: C.amber }}>
+                  El producto de cortesía ya no existe en el inventario. Selecciona el reemplazo para volver a aplicar esta promoción.
+                  <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                    <select
+                      style={{ ...s.sel, flex: "1 1 180px" }}
+                      value={giftReplacements[promotion.id] || ""}
+                      onChange={event => setGiftReplacements(current => ({ ...current, [promotion.id]: event.target.value }))}
+                    >
+                      <option value="">Seleccionar producto de cortesía</option>
+                      {productos.map(product => <option key={product.id} value={product.id}>{product.name} · stock {product.stock}</option>)}
+                    </select>
+                    <button type="button" style={s.btn("success")} onClick={() => void replaceMissingGift(promotion)}>
+                      Actualizar cortesía
+                    </button>
+                  </div>
+                </div>
+              )}
               {["combo", "precio_especial"].includes(promotion.tipo) && (
                 <div className="promotion-card__price"><span>Precio promocional</span><strong>${Number(promotion.precio_promocional || 0).toLocaleString("es-CO")}</strong></div>
               )}

@@ -9,7 +9,7 @@ const r1k  = v => Math.round((v||0) / 1000) * 1000; // redondear al millar más 
 
 export function printPlanilla(p, negName) {
   const movs    = p.movimientos || [];
-  const hasMovs = movs.some(m => m.salidas>0 || m.entradas>0 || m.cortesia>0);
+  const hasMovs = movs.some(m => m.salidas>0 || m.entradas>0 || m.cortesia>0 || (Number(m.ajusteInventario)||0)!==0);
 
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Planilla ${esc(p.fecha)} — ${esc(negName)}</title>
 <style>
@@ -44,7 +44,7 @@ tr.modified{background:#fff7ed;}
 ${hasMovs?`
 <h2>Movimiento de Inventario</h2>
 <table>
-  <thead><tr><th>Productos</th><th>Inicio</th><th>Entradas</th><th>Existencias</th><th>Salidas</th><th>Cortesía</th><th>V/Unitario</th><th>DESCU</th><th>V/Total</th></tr></thead>
+  <thead><tr><th>Productos</th><th>Inicio</th><th>Entradas</th><th>Ajustes</th><th>Existencias</th><th>Salidas</th><th>Cortesía</th><th>V/Unitario</th><th>DESCU</th><th>V/Total</th></tr></thead>
   <tbody>
     ${movs.map(m=>{
       const vendidas    = Math.max(0,(m.salidas||0)-(m.cortesia||0));
@@ -52,13 +52,14 @@ ${hasMovs?`
       const esAjuste    = m.ventaManual!==undefined;
       const vTotal      = esAjuste ? m.ventaManual : (m.total!==undefined ? m.total : vAuto);
       const diferencia  = esAjuste ? (vTotal - vAuto) : 0;
-      const existencias = m.final !== undefined ? m.final : (m.inicio||0)+(m.entradas||0)-(m.salidas||0)-(m.cortesia||0);
+      const existencias = m.final !== undefined ? m.final : (m.inicio||0)+(m.entradas||0)+(m.ajusteInventario||0)-(m.salidas||0);
       const esNeg       = existencias<0;
       const rowClass    = esNeg?'yellow':esAjuste?'modified':'';
       return `<tr${rowClass?` class="${rowClass}"`:''}>
         <td>${esc(m.name)}${esAjuste?'<span class="badge-mod">✏ AJUSTE MANUAL</span>':''}</td>
         <td>${m.inicio||0}</td>
         <td>${m.entradas||0}</td>
+        <td>${m.ajusteInventario>0?'+':''}${m.ajusteInventario||0}</td>
         <td${esNeg?' style="background:#fef2f2;color:#dc2626;font-weight:800;"':''}>${existencias}</td>
         <td>${m.salidas||0}</td>
         <td>${m.cortesia||0}</td>

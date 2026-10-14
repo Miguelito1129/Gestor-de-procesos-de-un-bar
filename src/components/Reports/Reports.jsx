@@ -20,11 +20,23 @@ const tt = {
 // Colores para top egresos
 const EGR_COLORS = ['#f87171','#fb923c','#fbbf24','#a78bfa','#60a5fa','#34d399','#f472b6','#94a3b8'];
 
+const localDateKey = date => [
+  date.getFullYear(),
+  String(date.getMonth() + 1).padStart(2, '0'),
+  String(date.getDate()).padStart(2, '0'),
+].join('-');
+const defaultDateRange = () => {
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(start.getDate() - 30);
+  return { start: localDateKey(start), end: localDateKey(end) };
+};
+
 export default function Reports({ negocios }) {
   const { user } = useAuth();
   const visible = negocios.filter(n => canSeeNeg(user, n.id));
   const [selNeg, setSelNeg]             = useState(visible[0]?.id || '');
-  const [periodo, setPeriodo]           = useState('all');
+  const [dateRange, setDateRange] = useState(defaultDateRange);
   const [viewPlanilla, setViewPlanilla] = useState(null);
   const [showResumenPicker, setShowResumenPicker] = useState(false);
   const [resumenFecha, setResumenFecha] = useState('');
@@ -36,13 +48,39 @@ export default function Reports({ negocios }) {
   const allSorted    = [...allPlanillas].sort((a,b) => a.fecha.localeCompare(b.fecha));
   const lastPlanilla = allSorted[allSorted.length - 1] || null;
 
-  // ── Filtro período ────────────────────────────────────────────────────────────
-  const cutoff = periodo === 'all' ? null : (() => {
-    const d = new Date(); d.setDate(d.getDate() - parseInt(periodo));
-    return d.toISOString().slice(0, 10);
-  })();
-  const planillas = cutoff ? allPlanillas.filter(p => p.fecha >= cutoff) : allPlanillas;
+  const validDateRange = Boolean(dateRange.start && dateRange.end && dateRange.start <= dateRange.end);
+  const planillas = validDateRange
+    ? allPlanillas.filter(p => p.fecha >= dateRange.start && p.fecha <= dateRange.end)
+    : [];
   const sorted    = [...planillas].sort((a,b) => a.fecha.localeCompare(b.fecha));
+  const reportDays = (() => {
+    if (!validDateRange) return [];
+    const days = [];
+    const current = new Date(`${dateRange.start}T00:00:00Z`);
+    const last = new Date(`${dateRange.end}T00:00:00Z`);
+    while (current <= last) {
+      days.push(localDateKey(new Date(current.getUTCFullYear(), current.getUTCMonth(), current.getUTCDate())));
+      current.setUTCDate(current.getUTCDate() + 1);
+    }
+    return days;
+  })();
+  const staffCostRows = (() => {
+    const rows = new Map();
+    for (const planilla of planillas) {
+      for (const payment of Array.isArray(planilla.personalDetalle) ? planilla.personalDetalle : []) {
+        const name = String(payment.name || '').trim();
+        if (!name) continue;
+        const role = String(payment.rol || '').trim();
+        const key = `${role.toLocaleLowerCase('es')}|${name.toLocaleLowerCase('es')}`;
+        const row = rows.get(key) || { key, name, role, values: {} };
+        row.values[planilla.fecha] = (row.values[planilla.fecha] || 0) + (Number(payment.pago) || 0);
+        rows.set(key, row);
+      }
+    }
+    return [...rows.values()].sort((first, second) =>
+      first.role.localeCompare(second.role, 'es') || first.name.localeCompare(second.name, 'es')
+    );
+  })();
 
   // ── KPIs ──────────────────────────────────────────────────────────────────────
   const totalVentas  = planillas.reduce((s,p) => s + (p.ventas  || 0), 0);
@@ -103,12 +141,12 @@ export default function Reports({ negocios }) {
           <select style={{...s.sel,width:160}} value={selNeg} onChange={e=>setSelNeg(e.target.value)}>
             {visible.map(n=><option key={n.id} value={n.id}>{n.emoji} {n.name}</option>)}
           </select>
-          <select style={{...s.sel,width:145}} value={periodo} onChange={e=>setPeriodo(e.target.value)}>
-            <option value="30">Últimos 30 días</option>
-            <option value="60">Últimos 60 días</option>
-            <option value="90">Últimos 90 días</option>
-            <option value="all">Todo el historial</option>
-          </select>
+          <label style={{display:'flex',alignItems:'center',gap:5,color:C.sub,fontSize:11}}>
+            Desde <input aria-label="Fecha inicial del reporte" type="date" style={s.inp} value={dateRange.start} max={dateRange.end} onChange={event=>setDateRange(current=>({...current,start:event.target.value}))}/>
+          </label>
+          <label style={{display:'flex',alignItems:'center',gap:5,color:C.sub,fontSize:11}}>
+            Hasta <input aria-label="Fecha final del reporte" type="date" style={s.inp} value={dateRange.end} min={dateRange.start} onChange={event=>setDateRange(current=>({...current,end:event.target.value}))}/>
+          </label>
           {allPlanillas.length>0&&(
             <button style={{...s.btn('primary'),fontSize:11,padding:'7px 14px'}}
               onClick={()=>{setResumenFecha(lastPlanilla?.fecha||'');setShowResumenPicker(true);}}>
@@ -120,6 +158,37 @@ export default function Reports({ negocios }) {
           </button>
         </div>
       </div>
+
+      <section style={{...s.card,marginBottom:'1rem'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:10}}>
+          <div>
+            <div style={{fontWeight:700,fontSize:13}}>Gastos de personal por día</div>
+            <div style={{fontSize:11,color:C.sub}}>Incluye los pagos de seguridad registrados en cada planilla del rango.</div>
+          </div>
+          <Badge color={C.indigo} small>{staffCostRows.length} personas · {reportDays.length} días</Badge>
+        </div>
+        {!validDateRange
+          ? <div role="alert" style={{color:C.red,fontSize:12}}>Selecciona un rango de fechas válido.</div>
+          : staffCostRows.length === 0
+            ? <div style={{color:C.sub,fontSize:12}}>No hay pagos de personal registrados en este rango.</div>
+            : <div style={{overflowX:'auto'}}>
+              <table style={{width:'100%',minWidth:Math.max(620, 230 + reportDays.length * 105),borderCollapse:'collapse',fontSize:11}}>
+                <thead><tr>
+                  <th style={{...s.th,textAlign:'left',position:'sticky',left:0,background:C.surface}}>Personal</th>
+                  {reportDays.map(day=><th key={day} style={{...s.th,textAlign:'right',whiteSpace:'nowrap'}}>{day.slice(8)}/{day.slice(5,7)}</th>)}
+                  <th style={{...s.th,textAlign:'right'}}>Total</th>
+                </tr></thead>
+                <tbody>{staffCostRows.map((row,index)=>{
+                  const total = reportDays.reduce((sum,day)=>sum+(row.values[day]||0),0);
+                  return <tr key={row.key}>
+                    <td style={{...s.td(index),position:'sticky',left:0,background:index%2===0?C.rowA:C.rowB,fontWeight:600,whiteSpace:'nowrap'}}>{row.name}<span style={{color:C.sub,fontWeight:400}}> · {row.role || 'Personal'}</span></td>
+                    {reportDays.map(day=><td key={day} style={{...s.td(index),textAlign:'right',whiteSpace:'nowrap'}}>{row.values[day]?COP(row.values[day]):'—'}</td>)}
+                    <td style={{...s.td(index),textAlign:'right',fontWeight:700,whiteSpace:'nowrap'}}>{COP(total)}</td>
+                  </tr>;
+                })}</tbody>
+              </table>
+            </div>}
+      </section>
 
       {/* ── KPIs Utilidad ──────────────────────────────────────────────────────── */}
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:8,marginBottom:'1.25rem'}}>

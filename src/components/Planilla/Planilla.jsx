@@ -1,25 +1,25 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { C, s, COP, NOW_TIME, BILLETS } from "../../constants/theme.js";
 import { ROL_COLORS, ROLES_LIST } from "../../constants/roles.js";
 import { CAT_COLORS } from "../../constants/roles.js";
 import { useAuth } from "../../hooks/useAuth.jsx";
-import { localFetch, localUpdate, localDelete, localDeleteStaff, localInsert, localInsertDetailed } from "../../lib/localApi.js";
+import { localFetch, localFetchOrThrow, localUpdate, localDelete, localDeleteStaff, localInsert, localInsertDetailed, localUpdateTurnInventoryOpening } from "../../lib/localApi.js";
 import { uid } from "../../utils/helpers.js";
 import { formatLocalDateKey, formatLocalTime } from "../../utils/dateTime.js";
 import { printPlanilla } from "../../utils/printPlanilla.js";
 import { Badge, Metric, SectionTitle, TabBar, Modal } from "../common/index.jsx";
+import { OrderPageTabs, visibleOrderPage } from "../Turnos/OrderPagination.jsx";
 const r1000 = v => Math.round(v / 1000) * 1000; // redondear al millar más cercano
 const COMANDA_STATUS = {
   enviada: ['Esperando autorización', C.amber],
-  entregada_falta_pago: ['Entregado · falta pago', C.amber],
+  entregada_falta_pago: ['Entregado (pedido anterior)', C.amber],
   pagada: ['Pagado', C.green],
   cancelada: ['Cancelado', C.red],
 };
 const PLANILLA_ORDER_GROUPS = [
   { id: 'todos', title: 'Todos los pedidos', description: 'Todas las comandas registradas durante este turno.' },
   { id: 'enviada', title: 'Pendientes por autorizar', description: 'Pedidos que esperan revisión y autorización de Barra.' },
-  { id: 'entregada_falta_pago', title: 'Entregados · falta pago', description: 'Pedidos despachados que todavía no tienen pago confirmado.' },
-  { id: 'pagada', title: 'Pagados', description: 'Pedidos cuyo pago fue confirmado.' },
+  { id: 'pagada', title: 'Pagados y entregados', description: 'Pedidos despachados; el medio de pago elegido quedó registrado.' },
   { id: 'cancelada', title: 'Cancelados', description: 'Pedidos cancelados; no cuentan como ventas.' },
   { id: 'otros', title: 'Otros estados', description: 'Pedidos con un estado diferente a los habituales.' },
 ];
@@ -36,6 +36,17 @@ const planillaDateKey = value => {
 };
 const timestampDateKey = value => {
   return formatLocalDateKey(value);
+};
+const currentBogotaWeekRange = () => {
+  const todayKey = formatLocalDateKey(new Date());
+  if (!todayKey) return { start: '', end: '' };
+  const [year, month, day] = todayKey.split('-').map(Number);
+  const start = new Date(Date.UTC(year, month - 1, day));
+  start.setUTCDate(start.getUTCDate() - ((start.getUTCDay() + 6) % 7));
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + 6);
+  const dateKey = date => `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+  return { start: dateKey(start), end: dateKey(end) };
 };
 
 function ComandaMeseroFilter({ meseros, comandas, selected, onChange }) {
@@ -66,14 +77,17 @@ function ComandaMeseroFilter({ meseros, comandas, selected, onChange }) {
 }
 
 function PlanillaComandaTabs({ comandas, itemsByOrder, activeStatus, onStatusChange }) {
+  const [orderPage, setOrderPage] = useState(0);
+  useEffect(() => setOrderPage(0), [activeStatus]);
   const safeOrders = Array.isArray(comandas) ? comandas.filter(order => order && typeof order === 'object') : [];
   const ordersForStatus = statusId => safeOrders.filter(order => {
     if (statusId === 'todos') return true;
-    if (statusId === 'otros') return !COMANDA_STATUS[order.estado];
+    if (statusId === 'otros') return !['enviada', 'pagada', 'cancelada'].includes(order.estado);
     return order.estado === statusId;
   });
   const activeGroup = PLANILLA_ORDER_GROUPS.find(group => group.id === activeStatus) || PLANILLA_ORDER_GROUPS[0];
   const visibleOrders = ordersForStatus(activeGroup.id);
+  const visiblePageOrders = visibleOrderPage(visibleOrders, activeGroup.id, orderPage);
 
   return (
     <>
@@ -87,7 +101,10 @@ function PlanillaComandaTabs({ comandas, itemsByOrder, activeStatus, onStatusCha
             aria-selected={activeGroup.id === group.id}
             aria-controls="planilla-orders-panel"
             className={`barra-order-tab${group.id !== 'todos' && group.id !== 'otros' ? ` barra-order-tab--${group.id}` : ''}${activeGroup.id === group.id ? ' is-active' : ''}`}
-            onClick={() => onStatusChange(group.id)}
+            onClick={() => {
+              onStatusChange(group.id);
+              setOrderPage(0);
+            }}
           >
             <span>{group.title}</span><b>{ordersForStatus(group.id).length}</b>
           </button>
@@ -103,8 +120,16 @@ function PlanillaComandaTabs({ comandas, itemsByOrder, activeStatus, onStatusCha
           <div><h3>{activeGroup.title}</h3><p>{activeGroup.description}</p></div>
           <span>{visibleOrders.length}</span>
         </header>
+        <OrderPageTabs
+          status={activeGroup.id}
+          orderCount={visibleOrders.length}
+          page={orderPage}
+          onPageChange={setOrderPage}
+          idPrefix="planilla-orders"
+        />
         {!visibleOrders.length && <p className="barra-order-empty">No hay pedidos en esta categoría.</p>}
-        {visibleOrders.map(order => {
+        <div className={['pagada', 'cancelada'].includes(activeGroup.id) ? 'order-page-grid' : undefined}>
+        {visiblePageOrders.map(order => {
           const [statusLabel, statusColor] = COMANDA_STATUS[order.estado] || [order.estado || 'Estado desconocido', C.sub];
           return (
             <article key={order.id} className="barra-order planilla-order">
@@ -135,6 +160,7 @@ function PlanillaComandaTabs({ comandas, itemsByOrder, activeStatus, onStatusCha
             </article>
           );
         })}
+        </div>
       </section>
     </>
   );
@@ -281,6 +307,8 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
   const [showNuevoStaff,setShowNuevoStaff] = useState(false);
   const [checklist,setChecklist]  = useState(()=>saved().checklist||{});
   const [movs,setMovs]            = useState(()=>saved().movs||{});
+  const [productosInventario,setProductosInventario] = useState(negocio.productos);
+  const lastProductStocks = useRef(Object.fromEntries(negocio.productos.map(product => [product.id, Number(product.stock) || 0])));
   const [gastosT,setGastosT]      = useState(()=>saved().gastosT||[]);
   const [bancosTransfs,setBancosTransfs] = useState(()=>{
     const sv=saved();
@@ -303,16 +331,30 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
   const [extras,setExtras]        = useState(()=>saved().extras||'');
   const [pendientes,setPendientes]= useState(()=>saved().pendientes||'');
   const [novedades,setNovedades]  = useState(()=>saved().novedades||'');
+  const [turnoNovedades,setTurnoNovedades] = useState([]);
+  const [turnoNovedadesError,setTurnoNovedadesError] = useState('');
+  const [inventoryEntriesError,setInventoryEntriesError] = useState('');
+  const [inventoryOpeningDrafts,setInventoryOpeningDrafts] = useState({});
+  const [inventoryOpeningError,setInventoryOpeningError] = useState('');
+  const [savingOpeningProduct,setSavingOpeningProduct] = useState('');
   const [tab,setTab]              = useState('productos');
   const [historySearch,setHistorySearch] = useState('');
   const [historyFrom,setHistoryFrom] = useState('');
   const [historyTo,setHistoryTo] = useState('');
   const [historyPage,setHistoryPage] = useState(0);
-  const [ventasMesero,setVentasMesero] = useState(()=>saved().ventasMesero||{});
+  const [showAllClosedPlanillas,setShowAllClosedPlanillas] = useState(false);
+  const [activeTurnComandas,setActiveTurnComandas] = useState([]);
+  const [activeTurnComandasError,setActiveTurnComandasError] = useState('');
+  const [activeTurnComandasLoading,setActiveTurnComandasLoading] = useState(false);
   const [billetes,setBilletes]    = useState(()=>saved().billetes||{});
   const [resumen,setResumen]      = useState(null);
   const [gForm,setGForm]          = useState({desc:'',monto:''});
   const [viewPlanilla,setViewPlanilla] = useState(null);
+  const [closedPlanillaTab,setClosedPlanillaTab] = useState('planilla');
+  const [closedTurnNovelties,setClosedTurnNovelties] = useState([]);
+  const [closedTurnNotes,setClosedTurnNotes] = useState([]);
+  const [closedNoveltiesError,setClosedNoveltiesError] = useState('');
+  const [closedNoveltiesLoading,setClosedNoveltiesLoading] = useState(false);
   const [viewComandas,setViewComandas] = useState([]);
   const [viewComandaItems,setViewComandaItems] = useState({});
   const [comandasLoading,setComandasLoading] = useState(false);
@@ -370,6 +412,202 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
   }, [negocio.id]);
 
   useEffect(() => {
+    if (!turnoId || step !== 'abierto') return undefined;
+    let active = true;
+    let poll;
+    const refreshProducts = async () => {
+      const [products, courtesyMovements, inventoryAdjustments, activeTurns] = await Promise.all([
+        localFetch('productos', `negocio_id=eq.${negocio.id}&select=*&order=sort_order.asc`),
+        localFetch('movimientos_inventario', `turno_id=eq.${encodeURIComponent(turnoId)}&tipo=eq.cortesia&select=producto_id,cantidad`),
+        localFetch('movimientos_inventario', `turno_id=eq.${encodeURIComponent(turnoId)}&tipo=eq.ajuste&select=producto_id,cantidad`),
+        localFetch('turnos', `id=eq.${encodeURIComponent(turnoId)}&select=inventario_apertura`),
+      ]);
+      if (!Array.isArray(inventoryAdjustments)) {
+        if (active) setInventoryEntriesError('La respuesta de los ajustes de inventario no tiene el formato esperado.');
+        return;
+      }
+      if (!active) return;
+      let entryMovements = null;
+      try {
+        entryMovements = await localFetchOrThrow(
+          'movimientos_inventario',
+          `turno_id=eq.${encodeURIComponent(turnoId)}&tipo=eq.entrada&select=producto_id,cantidad`,
+        );
+        if (!Array.isArray(entryMovements)) throw new Error('La respuesta de ingresos no tiene el formato esperado.');
+        if (active) setInventoryEntriesError('');
+      } catch (error) {
+        if (active) setInventoryEntriesError(error.message || 'No fue posible cargar ingresos y ajustes de inventario del turno.');
+      }
+      if (!active) return;
+      if (Array.isArray(activeTurns) && Array.isArray(activeTurns[0]?.inventario_apertura)) {
+        setTurnoAbierto(current => {
+          if (JSON.stringify(current?.inventario_apertura) === JSON.stringify(activeTurns[0].inventario_apertura)) return current;
+          return { ...current, inventario_apertura: activeTurns[0].inventario_apertura };
+        });
+      }
+      if (Array.isArray(products)) {
+        const courtesyByProduct = Array.isArray(courtesyMovements)
+          ? courtesyMovements.reduce((totals, movement) => {
+            const productId = String(movement.producto_id);
+            totals[productId] = (totals[productId] || 0) + Math.abs(Number(movement.cantidad) || 0);
+            return totals;
+          }, {})
+          : null;
+        const entriesByProduct = Array.isArray(entryMovements)
+          ? entryMovements.reduce((totals, movement) => {
+            const productId = String(movement.producto_id);
+            totals[productId] = (totals[productId] || 0) + Math.max(0, Number(movement.cantidad) || 0);
+            return totals;
+          }, {})
+          : null;
+        const adjustmentsByProduct = inventoryAdjustments.reduce((totals, movement) => {
+          const productId = String(movement.producto_id);
+          totals[productId] = (totals[productId] || 0) + (Number(movement.cantidad) || 0);
+          return totals;
+        }, {});
+        const previousStocks = lastProductStocks.current;
+        const nextStocks = Object.fromEntries(products.map(product => [product.id, Number(product.stock) || 0]));
+        setProductosInventario(current => {
+          const unchanged = current.length === products.length && products.every((product, index) =>
+            current[index]?.id === product.id
+            && Number(current[index]?.stock) === Number(product.stock)
+          );
+          return unchanged ? current : products;
+        });
+        setMovs(current => {
+          let changed = false;
+          const updated = { ...current };
+          for (const product of products) {
+            const movement = current[product.id] || {};
+            const manualEntries = Number(movement.entradas) || 0;
+            const registeredEntries = entriesByProduct
+              ? entriesByProduct[String(product.id)] || 0
+              : Math.max(0, manualEntries - Number(movement.entradasNoRegistradas || 0));
+            const entries = Math.max(manualEntries, registeredEntries);
+            const unrecordedEntries = Math.max(0, manualEntries - registeredEntries);
+            const courtesy = movement.cortesiaEditadaManualmente
+              ? Math.max(0, Number(movement.cortesia) || 0)
+              : courtesyByProduct
+                ? courtesyByProduct[String(product.id)] || 0
+                : Number(movement.cortesia) || 0;
+            const previousStock = previousStocks[product.id] ?? (Number(product.stock) || 0);
+            const adjustment = movement.existencias === undefined
+              ? 0
+              : Number(movement.ajusteExistencias ?? (Number(movement.existencias) - previousStock - entries)) || 0;
+            const openingItem = turnoAbierto?.inventario_apertura?.find(item =>
+              String(item.producto_id) === String(product.id)
+            );
+            const openingStock = Number(openingItem?.cantidad ?? product.stock) || 0;
+            const existencias = (Number(product.stock) || 0) + unrecordedEntries + adjustment;
+            const inventoryAdjustment = adjustmentsByProduct[String(product.id)] || 0;
+            const salidas = Math.max(0, openingStock + entries - existencias + inventoryAdjustment);
+            if ((movement.entradas !== entries && entries > 0)
+              || movement.entradasNoRegistradas !== unrecordedEntries
+              || (movement.cortesia !== courtesy && (courtesy > 0 || movement.cortesia !== undefined))
+              || movement.ajusteInventario !== inventoryAdjustment
+              || (movement.salidas !== salidas && (salidas !== 0 || movement.salidas !== undefined))
+              || (movement.existencias !== undefined && movement.existencias !== existencias)
+              || (movement.existencias !== undefined && movement.ajusteExistencias !== adjustment)) {
+              updated[product.id] = {
+                ...movement,
+                ...(entries > 0 ? { entradas: entries } : {}),
+                entradasNoRegistradas: unrecordedEntries,
+                cortesia: courtesy,
+                ajusteInventario: inventoryAdjustment,
+                salidas,
+                ...(movement.existencias !== undefined
+                  ? { existencias, ajusteExistencias: adjustment }
+                  : {}),
+              };
+              changed = true;
+            }
+          }
+          return changed ? updated : current;
+        });
+        lastProductStocks.current = nextStocks;
+      }
+      poll = window.setTimeout(refreshProducts, 1500);
+    };
+    void refreshProducts();
+    return () => {
+      active = false;
+      if (poll) window.clearTimeout(poll);
+    };
+  }, [turnoId, negocio.id, turnoAbierto, step]);
+
+  useEffect(() => {
+    if (!turnoId || step !== 'abierto') {
+      setTurnoNovedades([]);
+      setTurnoNovedadesError('');
+      return undefined;
+    }
+    let active = true;
+    let poll;
+    const refreshTurnoNovedades = async () => {
+      try {
+        const rows = await localFetchOrThrow(
+          'novedades',
+          `turno_id=eq.${encodeURIComponent(turnoId)}&select=id,texto,created_at,creado_por&order=created_at.desc`,
+        );
+        if (!Array.isArray(rows)) throw new Error('La respuesta de novedades no tiene el formato esperado.');
+        if (active) {
+          setTurnoNovedades(rows);
+          setTurnoNovedadesError('');
+        }
+      } catch (error) {
+        if (active) setTurnoNovedadesError(error.message || 'No fue posible cargar las novedades del turno.');
+      }
+      if (active) poll = window.setTimeout(refreshTurnoNovedades, 3000);
+    };
+    void refreshTurnoNovedades();
+    return () => {
+      active = false;
+      if (poll) window.clearTimeout(poll);
+    };
+  }, [turnoId, step]);
+
+  useEffect(() => {
+    if (!turnoId || step !== 'abierto') {
+      setActiveTurnComandas([]);
+      setActiveTurnComandasError('');
+      setActiveTurnComandasLoading(false);
+      return undefined;
+    }
+    let active = true;
+    let refreshTimer;
+    const refreshComandas = async () => {
+      try {
+        const orders = await localFetchOrThrow(
+          'comandas',
+          `turno_id=eq.${encodeURIComponent(turnoId)}&select=id,mesero_id,mesero_nombre,total,estado`,
+        );
+        if (!Array.isArray(orders)) throw new Error('La respuesta de comandas no es válida.');
+        if (active) {
+          setActiveTurnComandas(orders);
+          setActiveTurnComandasError('');
+        }
+      } catch (error) {
+        console.error('No fue posible actualizar las ventas de comandas del turno:', error);
+        if (active) {
+          setActiveTurnComandas([]);
+          setActiveTurnComandasError('No fue posible cargar las ventas de las comandas. Se volverá a intentar automáticamente.');
+        }
+      } finally {
+        if (active) setActiveTurnComandasLoading(false);
+        if (active) refreshTimer = window.setTimeout(refreshComandas, 1500);
+      }
+    };
+    setActiveTurnComandas([]);
+    setActiveTurnComandasError('');
+    setActiveTurnComandasLoading(true);
+    void refreshComandas();
+    return () => {
+      active = false;
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+    };
+  }, [turnoId, step]);
+
+  useEffect(() => {
     if (!turnoId) return undefined;
     let active = true;
     const refreshAuthorizedWaiters = async () => {
@@ -423,9 +661,14 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
       setViewComandas([]);
       setViewComandaItems({});
       setPlanillaBankTransfers([]);
+      setClosedTurnNovelties([]);
+      setClosedTurnNotes([]);
       setBankHistoryError('');
+      setClosedNoveltiesError('');
+      setClosedNoveltiesLoading(false);
       setViewMeseroFilter('todos');
       setViewActiveStatus('todos');
+      setClosedPlanillaTab('planilla');
       setComandasError('');
       return undefined;
     }
@@ -435,8 +678,14 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
     setViewComandas([]);
     setViewComandaItems({});
     setPlanillaBankTransfers([]);
+    setClosedTurnNovelties([]);
+    setClosedTurnNotes([]);
     setBankHistoryError('');
+    setClosedNoveltiesError('');
+    setClosedNoveltiesLoading(true);
     setViewMeseroFilter('todos');
+    setClosedPlanillaTab('planilla');
+    let noveltiesLoaded = false;
     (async () => {
       try {
         const shifts = await localFetch(
@@ -451,6 +700,23 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
         const selectedShifts = linkedShifts.length ? linkedShifts : shifts.filter(shift =>
           planillaDay && timestampDateKey(shift.fecha_apertura) === planillaDay
         );
+        const noveltyGroups = await Promise.all(selectedShifts.map(shift =>
+          localFetch('novedades', `turno_id=eq.${encodeURIComponent(shift.id)}&select=id,texto,created_at,creado_por&order=created_at.desc`)
+        ));
+        const noveltiesFailed = noveltyGroups.some(group => !Array.isArray(group));
+        const noveltyRows = noveltiesFailed ? [] : noveltyGroups.flat()
+          .filter(item => item && typeof item === 'object')
+          .sort((first, second) => String(second.created_at || '').localeCompare(String(first.created_at || '')));
+        if (active) {
+          setClosedTurnNovelties(noveltyRows);
+          setClosedTurnNotes(selectedShifts.flatMap(shift => [
+            shift.novedades_apertura ? { id: `${shift.id}-apertura`, tipo: 'Apertura', texto: shift.novedades_apertura, created_at: shift.fecha_apertura } : null,
+            shift.novedades_cierre ? { id: `${shift.id}-cierre`, tipo: 'Cierre', texto: shift.novedades_cierre, created_at: shift.fecha_cierre } : null,
+          ].filter(Boolean)));
+          setClosedNoveltiesError(noveltiesFailed ? 'No fue posible cargar las novedades registradas en este turno.' : '');
+          setClosedNoveltiesLoading(false);
+        }
+        noveltiesLoaded = true;
         const transferGroups = await Promise.all([
           localFetch('transferencias', `planilla_id=eq.${encodeURIComponent(viewPlanilla.id)}&select=*&order=created_at.asc`),
           ...selectedShifts.map(shift =>
@@ -492,7 +758,13 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
         }
       } catch (error) {
         console.error('No fue posible cargar el detalle de comandas de la planilla:', error);
-        if (active) setComandasError(error.message || 'No fue posible cargar las comandas de esta planilla.');
+        if (active) {
+          setComandasError(error.message || 'No fue posible cargar las comandas de esta planilla.');
+          if (!noveltiesLoaded) {
+            setClosedNoveltiesError('No fue posible cargar las novedades asociadas a esta planilla.');
+            setClosedNoveltiesLoading(false);
+          }
+        }
       } finally {
         if (active) setComandasLoading(false);
       }
@@ -502,9 +774,9 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
 
   useEffect(()=>{
     if(step==='inicio'||step==='cerrado') return;
-    const data={step,turnoId,apertura,baseCaja,staffActivo,authorizedMeseroIds,checklist,movs,gastosT,bancosTransfs:bancosTransfs.filter(transfer=>String(transfer.id).startsWith('_')).map(({foto_url,comprobante,...transfer})=>transfer),extras,pendientes,novedades,ventasMesero,billetes,pctBarra,pctMeseros};
+    const data={step,turnoId,apertura,baseCaja,staffActivo,authorizedMeseroIds,checklist,movs,gastosT,bancosTransfs:bancosTransfs.filter(transfer=>String(transfer.id).startsWith('_')).map(({foto_url,comprobante,...transfer})=>transfer),extras,pendientes,novedades,billetes,pctBarra,pctMeseros};
     localStorage.setItem(TURNO_KEY, JSON.stringify(data));
-  },[step,turnoId,apertura,movs,gastosT,bancosTransfs,extras,pendientes,novedades,ventasMesero,billetes,checklist,pctBarra,pctMeseros,staffActivo,authorizedMeseroIds]);
+  },[step,turnoId,apertura,movs,gastosT,bancosTransfs,extras,pendientes,novedades,billetes,checklist,pctBarra,pctMeseros,staffActivo,authorizedMeseroIds]);
 
 
 
@@ -513,45 +785,93 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
     String(person.name || '').toLocaleLowerCase('es').includes(normalizedStaffFilter)
     || String(person.rol || '').toLocaleLowerCase('es').includes(normalizedStaffFilter)
   );
-  const negocioMeseroUsers = (users||[]).filter(account => {
-    if (account.role !== 'mesero') return false;
-    if (account.negocios === 'all') return true;
-    if (Array.isArray(account.negocios)) return account.negocios.some(id => String(id) === String(negocio.id));
-    if (typeof account.negocios === 'string') {
-      try {
-        const businessIds = JSON.parse(account.negocios);
-        return Array.isArray(businessIds) && businessIds.some(id => String(id) === String(negocio.id));
-      } catch {
-        return account.negocios === negocio.id;
-      }
-    }
-    return false;
-  });
-  const authorizedMeseros = negocioMeseroUsers
-    .filter(account => authorizedMeseroIds.map(String).includes(String(account.id)))
-    .map(account => {
+  const waiterNameKey = name => String(name || '').trim().toLocaleLowerCase('es');
+  const waiterAccounts = (users || []).filter(account =>
+    String(account.role || '').toLowerCase() === 'mesero'
+  );
+  const authorizedMeseros = [...new Set(authorizedMeseroIds.map(String))]
+    .filter(Boolean)
+    .map(id => {
+      const account = waiterAccounts.find(user => String(user.id) === id);
       const staffMatch = staffActivo.find(person =>
         person.rol === 'mesero'
-        && String(person.name || '').trim().toLocaleLowerCase('es') === String(account.name || '').trim().toLocaleLowerCase('es')
+        && waiterNameKey(person.name) === waiterNameKey(account?.name)
       );
-      return { id: account.id, name: String(account.name || 'Mesero'), rol: 'mesero', pay: staffMatch?.pay ?? `${pctMeseros}%`, activo: true };
+      return {
+        id,
+        name: String(account?.name || staffMatch?.name || 'Mesero'),
+        rol: 'mesero',
+        pay: staffMatch?.pay ?? `${pctMeseros}%`,
+        activo: true,
+      };
     });
+  const meserosConVentas = new Map();
+  activeTurnComandas.filter(order => order.estado === 'pagada').forEach(order => {
+    const account = waiterAccounts.find(user =>
+      (order.mesero_id && String(user.id) === String(order.mesero_id))
+      || (!order.mesero_id && waiterNameKey(user.name) === waiterNameKey(order.mesero_nombre))
+    );
+    const id = String(order.mesero_id || account?.id || waiterNameKey(order.mesero_nombre));
+    if (!id) return;
+    const staffMatch = staffActivo.find(person =>
+      person.rol === 'mesero'
+      && waiterNameKey(person.name) === waiterNameKey(account?.name || order.mesero_nombre)
+    );
+    meserosConVentas.set(id, {
+      id,
+      name: String(account?.name || order.mesero_nombre || 'Mesero'),
+      rol: 'mesero',
+      pay: staffMatch?.pay ?? `${pctMeseros}%`,
+      activo: true,
+    });
+  });
   const barman         = staffActivo.find(s=>s.rol==='barra'&&s.activo);
   const dj             = staffActivo.find(s=>s.rol==='dj'&&s.activo);
-  const meseros        = authorizedMeseros;
-  const pagoFijosStaff = staffActivo.filter(s=>['patin','seguridad','aseo','barra_fija','mesero_fijo'].includes(s.rol)&&s.activo);
+  const meseros        = [...new Map([...authorizedMeseros, ...meserosConVentas.values()]
+    .map(mesero => [String(mesero.id), mesero])).values()];
+  const pagoFijosStaff = staffActivo.filter(s=>(['patin','seguridad','aseo','barra_fija','mesero_fijo'].includes(s.rol)||s.customRole)&&s.activo);
+  const seguridadStaff = pagoFijosStaff.filter(s=>s.rol==='seguridad');
+  const personalFijoStaff = pagoFijosStaff.filter(s=>s.rol!=='seguridad');
   const totalBancos        = bancosTransfs.reduce((s,t)=>s+(Number(t.monto)||0),0);
   const totalGastosT       = gastosT.reduce((s,g)=>s+g.monto,0);
   const totalBilletes      = BILLETS.reduce((s,b)=>s+(parseInt(billetes[b])||0)*b,0);
-  const totalVentaProductos= negocio.productos.reduce((s,p)=>{const m=movs[p.id]||{};return s+(m.ventaManual!==undefined?m.ventaManual:Math.max(0,(m.salidas||0)-(m.cortesia||0))*p.price);},0);
-  const totalVentasMeseros = meseros.reduce((s,m)=>s+(parseInt(ventasMesero[m.id])||0),0);
+  const negocioProductsById = new Map(negocio.productos.map(product => [product.id, product]));
+  const productosPlanilla = productosInventario.map(product => ({
+    ...(negocioProductsById.get(product.id) || {}),
+    ...product,
+    stock: Number(product.stock) || 0,
+  }));
+  const existenciasProducto = (product, movement = {}) => Number(
+    movement.existencias
+      ?? ((Number(product.stock) || 0) + Number(movement.entradasNoRegistradas ?? movement.entradas ?? 0))
+  );
+  const totalVentaProductos= productosPlanilla.reduce((s,p)=>{const m=movs[p.id]||{};return s+(m.ventaManual!==undefined?m.ventaManual:Math.max(0,(m.salidas||0)-(m.cortesia||0))*p.price);},0);
+  const ventasMesero = activeTurnComandas.reduce((sales, order) => {
+    if (order.estado !== 'pagada') return sales;
+    const waiterId = String(order.mesero_id || waiterNameKey(order.mesero_nombre));
+    if (!waiterId) return sales;
+    sales[waiterId] = (sales[waiterId] || 0) + Math.max(0, Number(order.total) || 0);
+    return sales;
+  }, {});
+  const ventasMeseroPorId = Object.fromEntries(meseros.map(mesero => {
+    const ventasPorId = ventasMesero[String(mesero.id)];
+    const ventasPorNombre = ventasMesero[waiterNameKey(mesero.name)];
+    return [mesero.id, ventasPorId ?? ventasPorNombre ?? 0];
+  }));
+  const totalVentasMeseros = meseros.reduce((sum, mesero) => sum + ventasMeseroPorId[mesero.id], 0);
   const totalVentas        = totalVentaProductos;
-  const pagoBarra          = barman?r1000(totalVentas*(pctBarra/100)):0;
+  const barraPaymentMode   = barman?.paymentMode === 'fixed' ? 'fixed' : 'commission';
+  const pagoBarra          = barman
+    ? barraPaymentMode === 'fixed'
+      ? Math.max(0, Number(barman.pay) || 0)
+      : r1000(totalVentas*(pctBarra/100))
+    : 0;
   const pagoDJ             = dj?(typeof dj.pay==='number'?dj.pay:0):0;
-  const pagoMeseros        = meseros.map(m=>{const v=parseInt(ventasMesero[m.id])||0;return{...m,venta:v,pago:r1000(v*(pctMeseros/100))};});
+  const pagoMeseros        = meseros.map(m=>{const v=ventasMeseroPorId[m.id];return{...m,venta:v,pago:r1000(v*(pctMeseros/100))};});
   const capMeseros         = r1000(totalVentas*(pctMeseros/100));
   const totalMeserosFinal  = Math.min(pagoMeseros.reduce((s,m)=>s+m.pago,0),capMeseros);
   const pagoFijosTotal     = pagoFijosStaff.reduce((s,p)=>s+(typeof p.pay==='number'?p.pay:0),0);
+  const totalSeguridad     = seguridadStaff.reduce((s,p)=>s+(typeof p.pay==='number'?p.pay:0),0);
   const totalPersonal      = pagoBarra+pagoDJ+totalMeserosFinal+pagoFijosTotal;
   const neto               = totalVentas-totalBancos+(parseInt(extras)||0)-totalGastosT-totalPersonal-(parseInt(pendientes)||0);
 
@@ -576,8 +896,8 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
       setBankTransferError('Espera a que termine la carga de las transferencias del turno.');
       return;
     }
-    if (!turnoId || !mesero || !Number.isSafeInteger(monto) || monto <= 0 || !bForm.comprobante || savingTransfer) {
-      setBankTransferError('Selecciona un mesero activo, una foto y un monto válido mayor que cero.');
+    if (!turnoId || !mesero || !Number.isSafeInteger(monto) || monto <= 0 || savingTransfer) {
+      setBankTransferError('Selecciona un mesero activo y un monto válido mayor que cero.');
       return;
     }
     setSavingTransfer(true);
@@ -590,7 +910,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
       mesero_id: mesero.id,
       plataforma: bForm.plataforma,
       monto,
-      foto_url: bForm.comprobante,
+      foto_url: bForm.comprobante || null,
       descripcion: bForm.ref.trim() || null,
       verificada: false,
     };
@@ -614,7 +934,9 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
       created_at: new Date().toISOString(),
     }]);
     setBForm(current => ({ ...current, monto: '', ref: '', comprobante: '' }));
-    setBankTransferMessage('Transferencia y comprobante guardados en este turno.');
+    setBankTransferMessage(bForm.comprobante
+      ? 'Transferencia y comprobante guardados en este turno.'
+      : 'Transferencia guardada. Puedes adjuntar una foto de forma opcional.');
     setSavingTransfer(false);
   };
 
@@ -650,8 +972,10 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
     setStep('inicio');setTurnoId('');setTurnoAbierto(null);setMovs({});setGastosT([]);setBancosTransfs([]);
     setBForm({plataforma:'nequi',monto:'',ref:'',meseroId:'',comprobante:''});
     setTransferLinkError('');setBankTransferError('');setBankTransferMessage('');
-    setExtras('');setPendientes('');setNovedades('');setVentasMesero({});setBilletes({});setResumen(null);setChecklist({});
-    setStaffActivo(negocio.staff.map(s=>({...s,activo:true})));
+    setExtras('');setPendientes('');setNovedades('');setBilletes({});setResumen(null);setChecklist({});
+    setStaffActivo((negocio.staff.length ? negocio.staff : STAFF_DEFECTO)
+      .filter(staff=>!staff.customRole)
+      .map(s=>({...s,activo:true})));
     setAuthorizedMeseroIds([]);
     localStorage.removeItem(TURNO_KEY);
   };
@@ -667,9 +991,22 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
       alert('Ya existe un turno abierto para este negocio.');
       return;
     }
+    const currentProducts = await localFetch(
+      'productos',
+      `negocio_id=eq.${negocio.id}&select=*&order=sort_order.asc`,
+    );
+    if (!Array.isArray(currentProducts)) {
+      alert('No fue posible consultar el inventario actual. No se abrió el turno.');
+      return;
+    }
+    const openingProducts = currentProducts.map(product => ({
+      ...(negocio.productos.find(item => item.id === product.id) || {}),
+      ...product,
+      stock: Number(product.stock) || 0,
+    }));
     const id = uid();
     const activos = staffActivo.filter(person => person.activo && person.rol !== 'mesero');
-    const inventarioApertura = negocio.productos.map(product => ({
+    const inventarioApertura = openingProducts.map(product => ({
       producto_id: product.id,
       nombre: product.name,
       cantidad: Number(product.stock || 0),
@@ -690,6 +1027,8 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
       alert('No fue posible abrir el turno en SQLite.');
       return;
     }
+    lastProductStocks.current = Object.fromEntries(openingProducts.map(product => [product.id, product.stock]));
+    setProductosInventario(openingProducts);
     const movements = inventarioApertura.filter(item => item.cantidad > 0).map(item => ({
       id: uid(),
       negocio_id: negocio.id,
@@ -705,7 +1044,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
     setBForm({plataforma:'nequi',monto:'',ref:'',meseroId:'',comprobante:''});
     setBankTransferError('');setBankTransferMessage('');
     setTurnoId(id);
-    setTurnoAbierto({ id, base_caja: Number(baseCaja) || 0 });
+    setTurnoAbierto({ id, base_caja: Number(baseCaja) || 0, inventario_apertura: inventarioApertura });
     setAuthorizedMeseroIds([]);
     setChecklist(checkItems);
     if(novedadesApert) setNovedades(novedadesApert);
@@ -717,19 +1056,59 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
     setShowChecklist(false);
   };
 
+  const saveOpeningStock = async product => {
+    const rawValue = inventoryOpeningDrafts[product.id];
+    const openingStock = Number(rawValue);
+    if (rawValue === '' || !Number.isSafeInteger(openingStock) || openingStock < 0) {
+      setInventoryOpeningError('El inventario inicial debe ser un número entero igual o mayor que cero.');
+      return;
+    }
+    setSavingOpeningProduct(product.id);
+    setInventoryOpeningError('');
+    try {
+      const result = await localUpdateTurnInventoryOpening(turnoId, {
+        productos: [{ producto_id: String(product.id), inventario_inicial: openingStock }],
+      });
+      if (!Array.isArray(result?.productos) || !Array.isArray(result?.inventario_apertura)) {
+        throw new Error('La respuesta de la corrección del inventario inicial no es válida.');
+      }
+      const updatedStock = result.productos.find(item => String(item.producto_id) === String(product.id))?.existencias;
+      if (!Number.isSafeInteger(Number(updatedStock))) {
+        throw new Error('No se recibió el inventario actual corregido.');
+      }
+      setTurnoAbierto(current => ({ ...current, inventario_apertura: result.inventario_apertura }));
+      const updatedProducts = productosInventario.map(item =>
+        String(item.id) === String(product.id) ? { ...item, stock: Number(updatedStock) } : item
+      );
+      setProductosInventario(updatedProducts);
+      await onUpdateNegocio({ ...negocio, productos: updatedProducts });
+      lastProductStocks.current = { ...lastProductStocks.current, [product.id]: Number(updatedStock) };
+      setInventoryOpeningDrafts(current => {
+        const next = { ...current };
+        delete next[product.id];
+        return next;
+      });
+    } catch (error) {
+      console.error('No fue posible corregir el inventario inicial de la planilla:', error);
+      setInventoryOpeningError(error.message || 'No fue posible corregir el inventario inicial.');
+    } finally {
+      setSavingOpeningProduct('');
+    }
+  };
+
   const cerrarTurno = async () => {
     if (savingTransfer) {
       setBankTransferError('Espera a que termine el guardado de la transferencia antes de cerrar la planilla.');
       setTab('bancos');
       return;
     }
-    const personalDetalle=[...pagoMeseros.filter(m=>m.pago>0).map(m=>({name:m.name,rol:'mesero',pago:m.pago})),...(barman?[{name:barman.name,rol:'barra',pago:pagoBarra}]:[]),...(dj?[{name:dj.name,rol:'dj',pago:pagoDJ}]:[]),...pagoFijosStaff.map(s=>({name:s.name,rol:s.rol,pago:typeof s.pay==='number'?s.pay:0}))];
-    const movsList=negocio.productos.filter(p=>movs[p.id]&&(movs[p.id].salidas||movs[p.id].entradas||movs[p.id].cortesia||movs[p.id].existencias!==undefined)).map(p=>{const m=movs[p.id]||{};const vendidas=Math.max(0,(m.salidas||0)-(m.cortesia||0));const finalStock=m.existencias!==undefined?m.existencias:p.stock+(m.entradas||0)-(m.salidas||0)-(m.cortesia||0);const total=m.ventaManual!==undefined?m.ventaManual:vendidas*p.price;return{name:p.name,inicio:p.stock,entradas:m.entradas||0,salidas:m.salidas||0,cortesia:m.cortesia||0,final:finalStock,total,precio:p.price,...(m.ventaManual!==undefined?{ventaManual:m.ventaManual}:{})};});
+    const personalDetalle=[...pagoMeseros.filter(m=>m.pago>0).map(m=>({name:m.name,rol:'mesero',pago:m.pago})),...(barman?[{name:barman.name,rol:'barra',pago:pagoBarra,nota:barraPaymentMode==='commission'?`${pctBarra}% ventas`:'Pago fijo'}]:[]),...(dj?[{name:dj.name,rol:'dj',pago:pagoDJ,nota:'Pago fijo'}]:[]),...pagoFijosStaff.map(s=>({name:s.name,rol:s.customRole?(s.roleName?.trim()||'Otro'):s.rol,pago:typeof s.pay==='number'?s.pay:0}))];
+    const movsList=productosPlanilla.filter(p=>movs[p.id]&&(movs[p.id].salidas||movs[p.id].entradas||movs[p.id].cortesia||movs[p.id].ajusteInventario||movs[p.id].existencias!==undefined)).map(p=>{const m=movs[p.id]||{};const inicio=Number(turnoAbierto?.inventario_apertura?.find(item=>String(item.producto_id)===String(p.id))?.cantidad??p.stock)||0;const vendidas=Math.max(0,(m.salidas||0)-(m.cortesia||0));const finalStock=existenciasProducto(p,m);const total=m.ventaManual!==undefined?m.ventaManual:vendidas*p.price;return{producto_id:p.id,name:p.name,inicio,entradas:m.entradas||0,ajusteInventario:m.ajusteInventario||0,salidas:m.salidas||0,cortesia:m.cortesia||0,final:finalStock,total,precio:p.price,...(m.ventaManual!==undefined?{ventaManual:m.ventaManual}:{})};});
     const gastosDetalle=gastosT.filter(g=>g.monto>0).map(g=>({desc:g.desc,monto:g.monto}));
     const bancoDetalle={};bancosTransfs.forEach(t=>{bancoDetalle[t.plataforma]=(bancoDetalle[t.plataforma]||0)+(Number(t.monto)||0);});
     const r={id:uid(),fecha:formatLocalDateKey(new Date()),apertura,cierre:NOW_TIME(),ventas:totalVentas,bancos:totalBancos,bancoDetalle,gastos:totalGastosT,extras:parseInt(extras)||0,pendientes:parseInt(pendientes)||0,personal:totalPersonal,personalDetalle,gastosDetalle,neto,arqueo:{total:totalBilletes},novedades,movimientos:movsList};
     r.diferencia=totalBilletes-neto;
-    const newProds=negocio.productos.map(p=>{const m=movs[p.id];if(!m)return p;if(m.existencias!==undefined)return{...p,stock:Math.max(0,m.existencias)};return{...p,stock:Math.max(0,p.stock+(m.entradas||0)-(m.salidas||0)-(m.cortesia||0))};});
+    const newProds=productosPlanilla.map(p=>{const m=movs[p.id];if(!m)return p;return{...p,stock:Math.max(0,existenciasProducto(p,m))};});
     await onUpdateNegocio({...negocio,productos:newProds,planillas:[r,...negocio.planillas]});
     setTransferLinkError('');
     const transfersToLink = bancosTransfs.filter(transfer => !String(transfer.id).startsWith('_'));
@@ -746,7 +1125,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
         legacy_planilla_id: r.id,
         fecha_cierre: new Date().toISOString(),
         inventario_cierre: movsList.map(item => ({
-          producto_id: negocio.productos.find(product => product.name === item.name)?.id || null,
+          producto_id: item.producto_id,
           nombre: item.name,
           cantidad: item.final,
         })),
@@ -758,7 +1137,110 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
     setResumen(r);setStep('cerrado');
   };
 
-  const tabs=[{id:'productos',label:'Planilla Productos'},{id:'ventas',label:'Ventas Meseros'},{id:'gastos',label:'Gastos'},{id:'bancos',label:'Bancos'},{id:'novedades',label:'Novedades'},{id:'perspectiva',label:'📊 Perspectiva'},{id:'cierre',label:'Cerrar Turno'}];
+  const tabs=[{id:'productos',label:'Planilla Productos'},{id:'ventas',label:'Personal'},{id:'gastos',label:'Gastos'},{id:'bancos',label:'Bancos'},{id:'novedades',label:'Novedades'},{id:'perspectiva',label:'📊 Perspectiva'},{id:'cierre',label:'Cerrar Turno'}];
+  const historyWeekRange = currentBogotaWeekRange();
+  const sortedClosedPlanillas = [...(negocio.planillas || [])]
+    .sort((first, second) => (planillaDateKey(second.fecha) || '').localeCompare(planillaDateKey(first.fecha) || ''));
+  const closedPlanillasInScope = showAllClosedPlanillas
+    ? sortedClosedPlanillas
+    : sortedClosedPlanillas.filter(planilla => {
+      const dateKey = planillaDateKey(planilla.fecha);
+      return dateKey && dateKey >= historyWeekRange.start && dateKey <= historyWeekRange.end;
+    });
+  const planillaNote = typeof viewPlanilla?.novedades === 'string' ? viewPlanilla.novedades.trim() : '';
+  const closedNotes = [
+    ...closedTurnNotes,
+    ...(planillaNote && !closedTurnNotes.some(note => note.texto === planillaNote)
+      ? [{ id: `${viewPlanilla?.id}-planilla`, tipo: 'Planilla', texto: planillaNote, created_at: null }]
+      : []),
+  ];
+  const closedMovements = Array.isArray(viewPlanilla?.movimientos) ? viewPlanilla.movimientos : [];
+  const closedStaffPayments = Array.isArray(viewPlanilla?.personalDetalle) ? viewPlanilla.personalDetalle : [];
+  const closedExpenses = Array.isArray(viewPlanilla?.gastosDetalle) ? viewPlanilla.gastosDetalle : [];
+  const closedPlanillaReport = (
+    <div style={{display:'grid',gap:12,marginTop:'1rem'}}>
+      <section style={s.card}>
+        <div style={{fontWeight:700,fontSize:13,marginBottom:10}}>Movimiento de inventario</div>
+        {closedMovements.length===0
+          ? <div style={{color:C.sub,fontSize:12}}>Esta planilla no tiene movimientos de inventario guardados.</div>
+          : <div style={{overflowX:'auto'}}>
+            <table style={{width:'100%',minWidth:700,borderCollapse:'collapse',fontSize:11}}>
+              <thead><tr>{['Producto','Inicio','Entradas','Ajustes','Existencias','Salidas','Cortesías','Precio','Total'].map(label=><th key={label} style={{padding:'7px 8px',borderBottom:`1px solid ${C.border}`,color:C.sub,textAlign:label==='Producto'?'left':'right',whiteSpace:'nowrap'}}>{label}</th>)}</tr></thead>
+              <tbody>{closedMovements.map((movement,index)=>{
+                const salesQuantity=Math.max(0,(Number(movement.salidas)||0)-(Number(movement.cortesia)||0));
+                const stock=movement.final??((Number(movement.inicio)||0)+(Number(movement.entradas)||0)+(Number(movement.ajusteInventario)||0)-(Number(movement.salidas)||0));
+                const total=movement.ventaManual!==undefined?movement.ventaManual:movement.total!==undefined?movement.total:salesQuantity*(Number(movement.precio)||0);
+                return <tr key={movement.producto_id||`${movement.name}-${index}`}>
+                  <td style={{padding:'7px 8px',borderBottom:`1px solid ${C.border}40`}}>{movement.name||'Producto'}</td>
+                  <td style={{padding:'7px 8px',textAlign:'right'}}>{movement.inicio||0}</td>
+                  <td style={{padding:'7px 8px',textAlign:'right'}}>{movement.entradas||0}</td>
+                  <td style={{padding:'7px 8px',textAlign:'right',color:movement.ajusteInventario?C.amber:C.sub}}>{movement.ajusteInventario>0?'+':''}{movement.ajusteInventario||0}</td>
+                  <td style={{padding:'7px 8px',textAlign:'right'}}>{stock}</td>
+                  <td style={{padding:'7px 8px',textAlign:'right'}}>{movement.salidas||0}</td>
+                  <td style={{padding:'7px 8px',textAlign:'right'}}>{movement.cortesia||0}</td>
+                  <td style={{padding:'7px 8px',textAlign:'right',whiteSpace:'nowrap'}}>{COP(movement.precio||0)}</td>
+                  <td style={{padding:'7px 8px',textAlign:'right',whiteSpace:'nowrap'}}>{COP(total||0)}</td>
+                </tr>;
+              })}</tbody>
+            </table>
+          </div>}
+      </section>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))',gap:12}}>
+        <section style={s.card}>
+          <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>Pagos de personal</div>
+          {closedStaffPayments.length===0
+            ? <div style={{color:C.sub,fontSize:12}}>Sin pagos de personal detallados.</div>
+            : closedStaffPayments.map((payment,index)=><div key={`${payment.name}-${index}`} style={{display:'flex',justifyContent:'space-between',gap:8,padding:'5px 0',borderBottom:`1px solid ${C.border}40`,fontSize:11}}>
+              <span>{payment.name}{payment.rol?` · ${payment.rol}`:''}</span><strong>{COP(payment.pago||0)}</strong>
+            </div>)}
+        </section>
+        <section style={s.card}>
+          <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>Gastos del turno</div>
+          {closedExpenses.length===0
+            ? <div style={{color:C.sub,fontSize:12}}>Sin gastos detallados.</div>
+            : closedExpenses.map((expense,index)=><div key={`${expense.desc||expense.descripcion}-${index}`} style={{display:'flex',justifyContent:'space-between',gap:8,padding:'5px 0',borderBottom:`1px solid ${C.border}40`,fontSize:11}}>
+              <span>{expense.desc||expense.descripcion||'Gasto'}</span><strong>{COP(expense.monto||0)}</strong>
+            </div>)}
+        </section>
+        <section style={s.card}>
+          <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>Resumen financiero</div>
+          {[['Ventas',viewPlanilla?.ventas],['Gastos',viewPlanilla?.gastos],['Bancos',viewPlanilla?.bancos],['Descorches/Extras',viewPlanilla?.extras],['Neto',viewPlanilla?.neto]].map(([label,value])=>(
+            <div key={label} style={{display:'flex',justifyContent:'space-between',gap:8,padding:'5px 0',borderBottom:`1px solid ${C.border}40`,fontSize:11}}>
+              <span>{label}</span><strong>{COP(value||0)}</strong>
+            </div>
+          ))}
+        </section>
+      </div>
+    </div>
+  );
+  const closedNoveltiesContent = (
+    <div style={{marginTop:'1rem'}}>
+      {closedNoveltiesLoading&&<div style={{color:C.sub,fontSize:12}}>Cargando novedades...</div>}
+      {closedNoveltiesError&&<div role="alert" style={{color:C.red,fontSize:12,padding:'10px 12px',borderRadius:8,background:`${C.red}12`,marginBottom:10}}>{closedNoveltiesError}</div>}
+      {!closedNoveltiesLoading&&!closedNoveltiesError&&closedTurnNovelties.length===0&&closedNotes.length===0
+        ? <div style={{...s.card,color:C.sub,fontSize:12,textAlign:'center'}}>No hay novedades registradas para esta planilla.</div>
+        : <div style={{display:'grid',gap:8}}>
+          {closedNotes.map(note=>(
+            <article key={note.id} style={{...s.card,padding:'12px 14px'}}>
+              <div style={{display:'flex',justifyContent:'space-between',gap:12,marginBottom:6}}>
+                <strong style={{fontSize:12}}>{note.tipo}</strong>
+                {note.created_at&&<time style={{fontSize:10,color:C.sub}}>{formatLocalTime(note.created_at)}</time>}
+              </div>
+              <div style={{fontSize:12,color:C.text2,whiteSpace:'pre-wrap'}}>{note.texto}</div>
+            </article>
+          ))}
+          {closedTurnNovelties.map((novelty,index)=>(
+            <article key={novelty.id||`${novelty.created_at}-${index}`} style={{...s.card,padding:'12px 14px'}}>
+              <div style={{display:'flex',justifyContent:'space-between',gap:12,marginBottom:6}}>
+                <strong style={{fontSize:12}}>Novedad del turno</strong>
+                {novelty.created_at&&<time style={{fontSize:10,color:C.sub}}>{formatLocalTime(novelty.created_at)}</time>}
+              </div>
+              <div style={{fontSize:12,color:C.text2,whiteSpace:'pre-wrap'}}>{novelty.texto}</div>
+            </article>
+          ))}
+        </div>}
+    </div>
+  );
 
   // ── JEFE: solo lectura de historial ──────────────────────────────────────────
   if (isJefe) return (
@@ -770,13 +1252,25 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
             <button style={s.btn()} onClick={()=>setViewPlanilla(null)}>← Volver</button>
             <button style={s.btn('primary')} onClick={()=>printPlanilla(viewPlanilla,negocio.name)}>🖨 Descargar PDF</button>
           </div>
+          <div className="planilla-detail-tabs" role="tablist" aria-label="Detalle del turno cerrado">
+            <button type="button" role="tab" aria-selected={closedPlanillaTab==='planilla'} className={closedPlanillaTab==='planilla'?'is-active':''} onClick={()=>setClosedPlanillaTab('planilla')}>Planilla cerrada</button>
+            <button type="button" role="tab" aria-selected={closedPlanillaTab==='comandas'} className={closedPlanillaTab==='comandas'?'is-active':''} onClick={()=>setClosedPlanillaTab('comandas')}>Comandas de la noche</button>
+            <button type="button" role="tab" aria-selected={closedPlanillaTab==='novedades'} className={closedPlanillaTab==='novedades'?'is-active':''} onClick={()=>setClosedPlanillaTab('novedades')}>Novedades</button>
+          </div>
+          {closedPlanillaTab==='planilla' ? <>
           <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,marginBottom:'1.25rem'}}>
             <Metric label="Ventas"   value={COP(viewPlanilla.ventas)}       color={C.green}/>
             <Metric label="Bancos"   value={COP(viewPlanilla.bancos||0)}    color={C.indigo}/>
             <Metric label="Neto"     value={COP(viewPlanilla.neto)}         color={C.amber}/>
             <Metric label="Personal" value={COP(viewPlanilla.personal||0)}  color={C.red}/>
           </div>
+          {closedPlanillaReport}
           <div style={{...s.card,marginTop:'1rem'}}>
+            <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>🏦 Transferencias y comprobantes</div>
+            {bankHistoryError&&<div role="alert" style={{color:C.red,fontSize:12,marginBottom:10}}>{bankHistoryError}</div>}
+            <BankTransferHistory transfers={planillaBankTransfers} users={users}/>
+          </div>
+          </> : closedPlanillaTab==='comandas' ? <div style={{...s.card,marginTop:'1rem'}}>
             <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>🧾 Comandas de esta noche</div>
             <div style={{fontSize:12,color:C.sub,marginBottom:12}}>Solo se muestran las comandas del turno correspondiente a la planilla {viewPlanilla.fecha}.</div>
             <ComandaMeseroFilter meseros={viewMeseros} comandas={viewComandas} selected={viewMeseroFilter} onChange={setViewMeseroFilter}/>
@@ -788,16 +1282,22 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
               activeStatus={viewActiveStatus}
               onStatusChange={setViewActiveStatus}
             />}
-          </div>
-          <div style={{...s.card,marginTop:'1rem'}}>
-            <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>🏦 Transferencias y comprobantes</div>
-            {bankHistoryError&&<div role="alert" style={{color:C.red,fontSize:12,marginBottom:10}}>{bankHistoryError}</div>}
-            <BankTransferHistory transfers={planillaBankTransfers} users={users}/>
-          </div>
+          </div> : closedNoveltiesContent}
         </div>
       ) : (
         <div style={s.card}>
-          {negocio.planillas.map(p=>(
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap',marginBottom:12}}>
+            <div>
+              <strong style={{fontSize:13}}>Turnos cerrados</strong>
+              <div style={{fontSize:11,color:C.sub,marginTop:3}}>{showAllClosedPlanillas?'Mostrando todos los cierres.':'Mostrando únicamente cierres de esta semana.'}</div>
+            </div>
+            <button type="button" className="planilla-view-button" onClick={()=>setShowAllClosedPlanillas(current=>!current)}>
+              {showAllClosedPlanillas?'Ver esta semana':'Consultar planillas anteriores'}
+            </button>
+          </div>
+          {closedPlanillasInScope.length===0
+            ? <div className="planilla-history-empty">{showAllClosedPlanillas?'Aún no hay planillas cerradas.':'No hay turnos cerrados esta semana.'}</div>
+            : closedPlanillasInScope.map(p=>(
             <div key={p.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 0',borderBottom:`1px solid ${C.border}50`}}>
               <div><span style={{fontWeight:600,fontSize:13}}>{p.fecha}</span><span style={{color:C.sub,marginLeft:8,fontSize:11}}>{p.apertura}–{p.cierre}</span></div>
               <div style={{display:'flex',gap:12,alignItems:'center'}}>
@@ -846,7 +1346,10 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
       .filter(planilla => {
         const dateKey = planillaDateKey(planilla.fecha);
         const searchable = `${planilla.fecha || ''} ${planilla.apertura || ''} ${planilla.cierre || ''}`.toLocaleLowerCase('es');
-        return (!normalizedSearch || searchable.includes(normalizedSearch))
+        const inSelectedPeriod = showAllClosedPlanillas
+          || (dateKey && dateKey >= historyWeekRange.start && dateKey <= historyWeekRange.end);
+        return inSelectedPeriod
+          && (!normalizedSearch || searchable.includes(normalizedSearch))
           && (!historyFrom || (dateKey && dateKey >= historyFrom))
           && (!historyTo || (dateKey && dateKey <= historyTo));
       })
@@ -949,9 +1452,14 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
             <div className="planilla-history-card__heading">
               <div className="planilla-home__card-heading">
                 <span className="planilla-home__icon planilla-home__icon--history">▤</span>
-                <div><h2>Turnos cerrados</h2><p>Consulta resultados y abre el detalle del cierre.</p></div>
+                <div><h2>Turnos cerrados</h2><p>{showAllClosedPlanillas?'Consulta cualquier cierre anterior.':'Se muestran los cierres de esta semana.'}</p></div>
               </div>
-              <Badge color={C.green} small>{filteredClosedPlanillas.length} registros</Badge>
+              <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                <Badge color={C.green} small>{filteredClosedPlanillas.length} registros</Badge>
+                <button type="button" className="planilla-view-button" onClick={()=>{setShowAllClosedPlanillas(current=>!current);setHistoryPage(0);}}>
+                  {showAllClosedPlanillas?'Ver esta semana':'Consultar anteriores'}
+                </button>
+              </div>
             </div>
             <div className="planilla-history-filters">
               <label className="planilla-history-search"><span aria-hidden="true">⌕</span><input aria-label="Buscar planillas por fecha u horario" placeholder="Buscar fecha u horario..." value={historySearch} onChange={event=>{setHistorySearch(event.target.value);setHistoryPage(0);}}/></label>
@@ -994,13 +1502,25 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
                 <button style={s.btn()} onClick={()=>setViewPlanilla(null)}>✕</button>
               </div>
             </div>
+            <div className="planilla-detail-tabs" role="tablist" aria-label="Detalle del turno cerrado">
+              <button type="button" role="tab" aria-selected={closedPlanillaTab==='planilla'} className={closedPlanillaTab==='planilla'?'is-active':''} onClick={()=>setClosedPlanillaTab('planilla')}>Planilla cerrada</button>
+              <button type="button" role="tab" aria-selected={closedPlanillaTab==='comandas'} className={closedPlanillaTab==='comandas'?'is-active':''} onClick={()=>setClosedPlanillaTab('comandas')}>Comandas de la noche</button>
+              <button type="button" role="tab" aria-selected={closedPlanillaTab==='novedades'} className={closedPlanillaTab==='novedades'?'is-active':''} onClick={()=>setClosedPlanillaTab('novedades')}>Novedades</button>
+            </div>
+            {closedPlanillaTab==='planilla' ? <>
             <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10}}>
               <Metric label="Ventas"   value={COP(viewPlanilla.ventas)}       color={C.green}/>
               <Metric label="Bancos"   value={COP(viewPlanilla.bancos||0)}    color={C.indigo}/>
               <Metric label="Neto"     value={COP(viewPlanilla.neto)}         color={C.amber}/>
               <Metric label="Personal" value={COP(viewPlanilla.personal||0)}  color={C.red}/>
             </div>
+            {closedPlanillaReport}
             <div style={{marginTop:'1rem',paddingTop:'1rem',borderTop:`1px solid ${C.border}50`}}>
+              <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>🏦 Transferencias y comprobantes</div>
+              {bankHistoryError&&<div role="alert" style={{color:C.red,fontSize:12,marginBottom:10}}>{bankHistoryError}</div>}
+              <BankTransferHistory transfers={planillaBankTransfers} users={users}/>
+            </div>
+            </> : closedPlanillaTab==='comandas' ? <div style={{...s.card,marginTop:'1rem'}}>
               <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>🧾 Comandas de esta noche</div>
               <div style={{fontSize:12,color:C.sub,marginBottom:12}}>Solo se muestran las comandas del turno correspondiente a la planilla {viewPlanilla.fecha}.</div>
               <ComandaMeseroFilter meseros={viewMeseros} comandas={viewComandas} selected={viewMeseroFilter} onChange={setViewMeseroFilter}/>
@@ -1012,12 +1532,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
                 activeStatus={viewActiveStatus}
                 onStatusChange={setViewActiveStatus}
               />}
-            </div>
-            <div style={{marginTop:'1rem',paddingTop:'1rem',borderTop:`1px solid ${C.border}50`}}>
-              <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>🏦 Transferencias y comprobantes</div>
-              {bankHistoryError&&<div role="alert" style={{color:C.red,fontSize:12,marginBottom:10}}>{bankHistoryError}</div>}
-              <BankTransferHistory transfers={planillaBankTransfers} users={users}/>
-            </div>
+            </div> : closedNoveltiesContent}
           </div>
         )}
 
@@ -1078,28 +1593,36 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
           <div style={{fontWeight:700,fontSize:13,marginBottom:'0.25rem'}}>Movimiento de Inventario</div>
           <div style={{fontSize:11,color:C.sub,marginBottom:'0.75rem'}}>
             📥 <strong style={{color:C.green}}>Entradas</strong> = mercancía que llegó este turno. &nbsp;
-            📦 <strong style={{color:C.green}}>Existencias</strong> = conteo físico al cierre del turno. &nbsp;
-            📤 <strong style={{color:C.amber}}>Salidas</strong> = calculadas automáticamente (Inicio + Entradas − Existencias). &nbsp;
-            🎁 <strong style={{color:C.purple}}>Cortesías</strong> se registran manualmente en el conteo de cierre.
+            ✎ <strong style={{color:C.amber}}>Ajustes</strong> = correcciones de inventario registradas por gerencia. &nbsp;
+            📦 <strong style={{color:C.green}}>Existencias</strong> = inventario disponible, actualizado con los despachos y editable. &nbsp;
+            📤 <strong style={{color:C.amber}}>Salidas</strong> = calculadas desde el inventario inicial. &nbsp;
+            🎁 <strong style={{color:C.purple}}>Cortesías</strong> = unidades sin cobro incluidas en las salidas.
           </div>
+          {inventoryEntriesError && <div role="alert" style={{color:C.red,fontSize:11,marginBottom:10}}>{inventoryEntriesError}</div>}
+          {inventoryOpeningError && <div role="alert" style={{color:C.red,fontSize:11,marginBottom:10}}>{inventoryOpeningError}</div>}
           {(()=>{
-            const negatives=negocio.productos.filter(p=>{const m=movs[p.id]||{};if(m.existencias!==undefined)return m.existencias<0;return p.stock+(m.entradas||0)-(m.salidas||0)-(m.cortesia||0)<0;});
+            const negatives=productosPlanilla.filter(p=>existenciasProducto(p,movs[p.id])<0);
             if(!negatives.length) return null;
             return <div style={{padding:'10px 14px',background:C.red+'18',border:`2px solid ${C.red}60`,borderRadius:8,marginBottom:'0.75rem',fontSize:12}}>
               <div style={{fontWeight:700,color:C.red,marginBottom:4}}>⚠ Existencias insuficientes — no se puede cerrar el turno con stock negativo</div>
-              <div style={{color:C.text}}>Productos: {negatives.map(p=>{const m=movs[p.id]||{};return m.existencias!==undefined?`${p.name} (exist:${m.existencias})`:`${p.name} (stock:${p.stock}, sale:${(m.salidas||0)+(m.cortesia||0)})`;}).join(' · ')}</div>
+              <div style={{color:C.text}}>Productos: {negatives.map(p=>`${p.name} (exist:${existenciasProducto(p,movs[p.id])})`).join(' · ')}</div>
             </div>;
           })()}
           <div style={{overflowX:'auto',overflowY:'auto',maxHeight:'calc(100vh - 290px)'}}>
-            <table style={{width:'100%',borderCollapse:'collapse',minWidth:720}}>
+            <table style={{width:'100%',borderCollapse:'collapse',minWidth:760}}>
               <thead><tr>{['Producto','Cat.','Inicio','📥 Entradas','📦 Existencias','📤 Salidas','🎁 Cortesía','Final','Venta'].map(h=><th key={h} style={{...s.th,position:'sticky',top:0,zIndex:2,background:'#1a1a2e'}}>{h}</th>)}</tr></thead>
-              <tbody>{negocio.productos.map((p,i)=>{
-                const m=movs[p.id]||{};const e=m.entradas||0;const sa=m.salidas||0;const co=m.cortesia||0;const final=m.existencias!==undefined?m.existencias:p.stock+e-sa-co;
+              <tbody>{productosPlanilla.map((p,i)=>{
+                const m=movs[p.id]||{};const e=m.entradas||0;const sa=m.salidas||0;const co=m.cortesia||0;const inicio=Number(turnoAbierto?.inventario_apertura?.find(item=>String(item.producto_id)===String(p.id))?.cantidad??p.stock)||0;const existencias=existenciasProducto(p,m);const final=existencias;
                 return(
                   <tr key={p.id} style={{background:final<0?C.red+'10':i%2===0?C.rowA:C.rowB}}>
                     <td style={{...s.td(i),fontWeight:500,fontSize:11}}>{p.name}</td>
                     <td style={s.td(i)}><Badge color={CAT_COLORS[p.cat]||C.muted} small>{p.cat}</Badge></td>
-                    <td style={{...s.td(i),fontWeight:700,color:C.sub}}>{p.stock}</td>
+                    <td style={{...s.td(i),fontWeight:700,color:C.sub}}>
+                      {['gerente','administrador'].includes(String(user?.role||'').toLowerCase())&&step==='abierto' ? <div style={{display:'flex',alignItems:'center',gap:3}}>
+                        <input aria-label={`Inventario inicial de ${p.name}`} type="number" min="0" step="1" style={{...s.inp,width:58,padding:'3px 4px',textAlign:'center'}} value={inventoryOpeningDrafts[p.id]??inicio} onChange={event=>setInventoryOpeningDrafts(current=>({...current,[p.id]:event.target.value}))}/>
+                        {inventoryOpeningDrafts[p.id]!==undefined&&Number(inventoryOpeningDrafts[p.id])!==inicio&&<button type="button" title="Guardar inventario inicial" style={{...s.btn('primary'),padding:'3px 6px',fontSize:10}} onClick={()=>saveOpeningStock(p)} disabled={savingOpeningProduct===p.id}>{savingOpeningProduct===p.id?'…':'✓'}</button>}
+                      </div> : inicio}
+                    </td>
                     <td style={s.td(i)}>
                       <input type="number" min="0" style={{...s.inp,width:56,padding:'3px 5px',textAlign:'center',border:`1px solid ${e>0?C.green:C.border}`,color:e>0?C.green:C.text,fontWeight:e>0?700:400,background:e>0?C.green+'12':C.surface}}
                         value={m.entradas||''} placeholder="0"
@@ -1111,15 +1634,23 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
                           border:`1px solid ${m.existencias!==undefined?C.green:C.border}`,
                           color:m.existencias!==undefined?C.green:C.text,
                           fontWeight:m.existencias!==undefined?700:400}}
-                        value={m.existencias??''} placeholder="—"
+                        value={existencias} placeholder="0"
                         onChange={ev=>{
                           const raw=ev.target.value;
                           const val=raw===''?undefined:parseInt(raw)||0;
                           setMovs(prev=>{
                             const prevM=prev[p.id]||{};
                             const ent=prevM.entradas||0;
-                            const newSalidas=val!==undefined?Math.max(0,p.stock+ent-val):0;
-                            const updated={...prev,[p.id]:{...prevM,existencias:val,salidas:newSalidas}};
+                            const newSalidas=val!==undefined?Math.max(0,inicio+ent-val):Math.max(0,inicio-p.stock);
+                            const updatedProduct={...prevM,salidas:newSalidas};
+                            if(val===undefined){
+                              delete updatedProduct.existencias;
+                              delete updatedProduct.ajusteExistencias;
+                            }else{
+                              updatedProduct.existencias=val;
+                              updatedProduct.ajusteExistencias=val-(p.stock+ent);
+                            }
+                            const updated={...prev,[p.id]:updatedProduct};
                             return updated;
                           });
                         }}/>
@@ -1130,7 +1661,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
                     <td style={s.td(i)}>
                       <input type="number" min="0" style={{...s.inp,width:56,padding:'3px 5px',textAlign:'center',color:co>0?C.purple:C.text,fontWeight:co>0?700:400,border:`1px solid ${co>0?C.purple:C.border}`}}
                         value={m.cortesia||''} placeholder="0"
-                        onChange={ev=>setMovs(prev=>({...prev,[p.id]:{...(prev[p.id]||{}),cortesia:parseInt(ev.target.value)||0}}))}/>
+                        onChange={ev=>setMovs(prev=>({...prev,[p.id]:{...(prev[p.id]||{}),cortesia:parseInt(ev.target.value)||0,cortesiaEditadaManualmente:true}}))}/>
                     </td>
                     <td style={{...s.td(i),fontWeight:800,fontSize:13,color:final<0?C.red:final<=p.min?C.amber:C.green}}>
                       {final}
@@ -1148,9 +1679,9 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
                         </div>
                       ):(
                         <div style={{display:'flex',alignItems:'center',gap:4,justifyContent:'flex-end'}}>
-                          <span style={{color:(sa-co)>0?C.green:C.sub,fontWeight:600}}>{sa>0?COP((sa-co)*p.price):'—'}</span>
+                          <span style={{color:(sa-co)>0?C.green:C.sub,fontWeight:600}}>{sa>0?COP(Math.max(0,sa-co)*p.price):'—'}</span>
                           {sa>0&&<button title="Ajustar total manualmente" style={{background:'none',border:'none',color:C.muted,cursor:'pointer',fontSize:11,padding:0,lineHeight:1}}
-                            onClick={()=>setMovs(prev=>({...prev,[p.id]:{...(prev[p.id]||{}),ventaManual:(sa-co)*p.price}}))}>✏</button>}
+                            onClick={()=>setMovs(prev=>({...prev,[p.id]:{...(prev[p.id]||{}),ventaManual:Math.max(0,sa-co)*p.price}}))}>✏</button>}
                         </div>
                       )}
                       {sa>0&&co>0&&m.ventaManual===undefined&&<div style={{fontSize:10,color:C.purple,marginTop:2}}>{sa} - {co} cort. = {sa-co} pagadas</div>}
@@ -1160,41 +1691,44 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
               })}</tbody>
             </table>
           </div>
-          {(()=>{const entradas=negocio.productos.filter(p=>(movs[p.id]?.entradas||0)>0);if(!entradas.length)return null;return<div style={{marginTop:8,padding:'8px 12px',background:C.green+'15',border:`1px solid ${C.green}30`,borderRadius:8,fontSize:12}}><strong style={{color:C.green}}>📥 Entradas registradas (sumarán al inventario al cerrar):</strong>{entradas.map((p,i)=><span key={i} style={{marginLeft:8,color:C.text2}}>+{movs[p.id].entradas} {p.name.split(' ').slice(0,2).join(' ')}</span>)}</div>;})()}
+          {(()=>{const entradas=productosPlanilla.filter(p=>(movs[p.id]?.entradas||0)>0);if(!entradas.length)return null;return<div style={{marginTop:8,padding:'8px 12px',background:C.green+'15',border:`1px solid ${C.green}30`,borderRadius:8,fontSize:12}}><strong style={{color:C.green}}>📥 Entradas registradas:</strong>{entradas.map((p,i)=><span key={i} style={{marginLeft:8,color:C.text2}}>+{movs[p.id].entradas} {p.name.split(' ').slice(0,2).join(' ')}</span>)}</div>;})()}
         </div>
       )}
 
       {tab==='ventas'&&(
         <div style={s.card}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0.5rem'}}>
-            <div style={{fontWeight:700,fontSize:13}}>Meseros autorizados — Comisiones</div>
+            <div style={{fontWeight:700,fontSize:13}}>Personal — Ventas y pagos del turno</div>
           </div>
           <div style={{display:'flex',gap:16,alignItems:'center',marginBottom:'0.75rem',padding:'8px 12px',background:C.surface,borderRadius:8,border:`1px solid ${C.border}`,flexWrap:'wrap'}}>
             <span style={{fontSize:11,color:C.sub,fontWeight:600}}>Comisiones:</span>
-            <div style={{display:'flex',alignItems:'center',gap:6,fontSize:12}}>
+            {barraPaymentMode==='commission'&&<div style={{display:'flex',alignItems:'center',gap:6,fontSize:12}}>
               <span style={{color:C.sub}}>Barra</span>
-              <input type="number" min="0" max="100" step="0.5" style={{...s.inp,width:58,padding:'3px 6px',textAlign:'center',fontSize:12}} value={pctBarra} onChange={e=>setPctBarra(parseFloat(e.target.value)||0)}/>
+              <input aria-label="Porcentaje de comisión de Barra" type="number" min="0" max="100" step="0.5" style={{...s.inp,width:58,padding:'3px 6px',textAlign:'center',fontSize:12}} value={pctBarra} onChange={e=>setPctBarra(parseFloat(e.target.value)||0)}/>
               <span style={{color:C.sub}}>%</span>
-            </div>
+            </div>}
             <div style={{display:'flex',alignItems:'center',gap:6,fontSize:12}}>
               <span style={{color:C.sub}}>Meseros</span>
               <input type="number" min="0" max="100" step="0.5" style={{...s.inp,width:58,padding:'3px 6px',textAlign:'center',fontSize:12}} value={pctMeseros} onChange={e=>setPctMeseros(parseFloat(e.target.value)||0)}/>
               <span style={{color:C.sub}}>%</span>
             </div>
           </div>
+          {activeTurnComandasError&&<div role="alert" style={{color:C.red,fontSize:12,marginBottom:10}}>{activeTurnComandasError}</div>}
           <div style={{fontSize:11,color:C.sub,marginBottom:'1rem'}}>
-            Ingresa lo que vendió cada mesero esta noche. El <strong style={{color:C.red}}>{pctMeseros}% de comisión se descuenta del neto</strong>.
-            La barra cobra <strong style={{color:C.amber}}>{pctBarra}% del total de ventas</strong>: {COP(totalVentas)}.
+            Las ventas se actualizan automáticamente con las comandas pagadas y entregadas{activeTurnComandasLoading?' (cargando)…':''}. El <strong style={{color:C.red}}>{pctMeseros}% de comisión se descuenta del neto</strong>.
+            {barraPaymentMode==='commission'
+              ? <>Barra cobra <strong style={{color:C.amber}}>{pctBarra}% de las ventas</strong> ({COP(totalVentas)}): {COP(pagoBarra)}.</>
+              : <>Barra recibe un pago fijo de <strong style={{color:C.amber}}>{COP(pagoBarra)}</strong>.</>}
           </div>
           <table style={{width:'100%',borderCollapse:'collapse',marginBottom:'1rem'}}>
             <thead><tr style={{background:C.surface}}>{['Mesero autorizado','Ventas del turno',`Comisión ${pctMeseros}%`,'Entrega en caja'].map(h=><th key={h} style={s.th}>{h}</th>)}</tr></thead>
             <tbody>
               {meseros.map((m,i)=>{
-                const v=parseInt(ventasMesero[m.id])||0;const comision=r1000(v*(pctMeseros/100));const entrega=v-comision;
+                const v=ventasMeseroPorId[m.id];const comision=r1000(v*(pctMeseros/100));const entrega=v-comision;
                 return(
                   <tr key={m.id} style={{background:i%2===0?C.rowA:C.rowB}}>
                     <td style={{...s.td(i),fontWeight:600}}>{m.name}</td>
-                    <td style={s.td(i)}><input style={{...s.inp,maxWidth:180,border:`1px solid ${v>0?C.green:C.border}`,color:v>0?C.green:C.text,fontWeight:v>0?700:400}} type="number" placeholder="0" value={ventasMesero[m.id]||''} onChange={e=>setVentasMesero(p=>({...p,[m.id]:e.target.value}))}/></td>
+                    <td style={{...s.td(i),color:v>0?C.green:C.sub,fontWeight:v>0?700:400}}>{activeTurnComandasLoading&&v===0?'Cargando…':COP(v)}</td>
                     <td style={{...s.td(i),color:C.red,fontWeight:v>0?700:400}}>{v>0?`− ${COP(comision)}`:'—'}</td>
                     <td style={{...s.td(i),color:v>0?C.amber:C.sub,fontWeight:v>0?700:400}}>{v>0?COP(entrega):'—'}</td>
                   </tr>
@@ -1213,11 +1747,15 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
           {meseros.length===0&&<div style={{color:C.sub,fontSize:12,padding:'1rem',textAlign:'center'}}>No hay meseros autorizados en este turno. Selecciónalos antes de abrir la planilla.</div>}
           <div style={{borderTop:`1px solid ${C.border}`,paddingTop:'1rem',display:'flex',flexDirection:'column',gap:8}}>
             <div style={{fontSize:11,color:C.sub,textTransform:'uppercase',fontWeight:600,letterSpacing:'0.05em',marginBottom:4}}>Otros pagos de personal</div>
-            {barman&&<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 10px',background:C.surface,borderRadius:8}}><div><span style={{fontWeight:600}}>{barman.name}</span><span style={{color:C.sub,marginLeft:8,fontSize:11}}>Barra {pctBarra}%</span></div><div style={{display:'flex',alignItems:'center',gap:8}}><span style={{color:C.red,fontWeight:700}}>− {COP(pagoBarra)}</span><button onClick={()=>setStaffActivo(p=>p.map(x=>x.id===barman.id?{...x,activo:false}:x))} style={{background:'none',border:'none',cursor:'pointer',color:C.muted,fontSize:15,padding:'0 4px',lineHeight:1}} title="Quitar del turno">✕</button></div></div>}
-            {dj&&<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 10px',background:C.surface,borderRadius:8}}><div><span style={{fontWeight:600}}>{dj.name}</span><span style={{color:C.sub,marginLeft:8,fontSize:11}}>DJ fijo</span></div><div style={{display:'flex',alignItems:'center',gap:6}}><span style={{color:C.sub,fontSize:11}}>−</span><input type="number" min="0" style={{...s.inp,width:110,padding:'3px 6px',textAlign:'right',fontSize:12}} value={typeof dj.pay==='number'?dj.pay:''} onChange={e=>setStaffActivo(p=>p.map(x=>x.id===dj.id?{...x,pay:parseInt(e.target.value)||0}:x))}/><button onClick={()=>setStaffActivo(p=>p.map(x=>x.id===dj.id?{...x,activo:false}:x))} style={{background:'none',border:'none',cursor:'pointer',color:C.muted,fontSize:15,padding:'0 4px',lineHeight:1}} title="Quitar del turno">✕</button></div></div>}
-            {pagoFijosStaff.map(st=>(
-              <div key={st.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 10px',background:C.surface,borderRadius:8}}><div><span style={{fontWeight:600}}>{st.name}</span><span style={{color:C.sub,marginLeft:8,fontSize:11}}>{st.rol.replace(/_/g,' ')}</span></div><div style={{display:'flex',alignItems:'center',gap:6}}><span style={{color:C.sub,fontSize:11}}>−</span><input type="number" min="0" style={{...s.inp,width:110,padding:'3px 6px',textAlign:'right',fontSize:12}} value={typeof st.pay==='number'?st.pay:''} onChange={e=>setStaffActivo(p=>p.map(x=>x.id===st.id?{...x,pay:parseInt(e.target.value)||0}:x))}/><button onClick={()=>setStaffActivo(p=>p.map(x=>x.id===st.id?{...x,activo:false}:x))} style={{background:'none',border:'none',cursor:'pointer',color:C.muted,fontSize:15,padding:'0 4px',lineHeight:1}} title="Quitar del turno">✕</button></div></div>
+            {barman&&<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,padding:'8px 10px',background:C.surface,borderRadius:8,flexWrap:'wrap'}}><div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontWeight:600}}>{barman.name}</span><span style={{color:C.sub,fontSize:11}}>Barra</span><select aria-label="Modalidad de pago de Barra" style={{...s.inp,width:150,padding:'4px 6px',fontSize:12}} value={barraPaymentMode} onChange={e=>setStaffActivo(p=>p.map(x=>x.id===barman.id?{...x,paymentMode:e.target.value,...(e.target.value==='fixed'?{pay:typeof x.pay==='number'?x.pay:0}:{})}:x))}><option value="commission">Comisión (%)</option><option value="fixed">Valor fijo</option></select>{barraPaymentMode==='fixed'&&<input aria-label="Pago fijo de Barra" type="number" min="0" step="1000" style={{...s.inp,width:120,padding:'3px 6px',textAlign:'right',fontSize:12}} value={Number(barman.pay)||0} onChange={e=>setStaffActivo(p=>p.map(x=>x.id===barman.id?{...x,pay:parseInt(e.target.value)||0}:x))}/>}</div><div style={{display:'flex',alignItems:'center',gap:8}}><span style={{color:C.sub,fontSize:11}}>{barraPaymentMode==='commission'?`${pctBarra}%`: 'Fijo'}</span><span style={{color:C.red,fontWeight:700}}>− {COP(pagoBarra)}</span><button onClick={()=>setStaffActivo(p=>p.map(x=>x.id===barman.id?{...x,activo:false}:x))} style={{background:'none',border:'none',cursor:'pointer',color:C.muted,fontSize:15,padding:'0 4px',lineHeight:1}} title="Quitar del turno">✕</button></div></div>}
+            {dj&&<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,padding:'6px 10px',background:C.surface,borderRadius:8}}><div><span style={{fontWeight:600}}>{dj.name}</span><span style={{color:C.sub,marginLeft:8,fontSize:11}}>DJ · pago fijo</span></div><div style={{display:'flex',alignItems:'center',gap:6}}><span style={{color:C.sub,fontSize:11}}>−</span><input aria-label="Pago fijo del DJ" type="number" min="0" step="1000" style={{...s.inp,width:110,padding:'3px 6px',textAlign:'right',fontSize:12}} value={typeof dj.pay==='number'?dj.pay:''} onChange={e=>setStaffActivo(p=>p.map(x=>x.id===dj.id?{...x,pay:parseInt(e.target.value)||0}:x))}/><button onClick={()=>setStaffActivo(p=>p.map(x=>x.id===dj.id?{...x,activo:false}:x))} style={{background:'none',border:'none',cursor:'pointer',color:C.muted,fontSize:15,padding:'0 4px',lineHeight:1}} title="Quitar del turno">✕</button></div></div>}
+            {personalFijoStaff.map(st=>(
+              <div key={st.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,padding:'6px 10px',background:C.surface,borderRadius:8,flexWrap:'wrap'}}>{st.customRole?<><input aria-label="Nombre del rol adicional" style={{...s.inp,width:130,padding:'4px 6px',fontSize:12}} value={st.roleName||''} placeholder="Rol" onChange={e=>setStaffActivo(p=>p.map(x=>x.id===st.id?{...x,roleName:e.target.value}:x))}/><input aria-label="Nombre de la persona del rol adicional" style={{...s.inp,flex:'1 1 130px',minWidth:110,padding:'4px 6px',fontSize:12}} value={st.name||''} placeholder="Nombre de la persona" onChange={e=>setStaffActivo(p=>p.map(x=>x.id===st.id?{...x,name:e.target.value}:x))}/></>:<div><span style={{fontWeight:600}}>{st.name}</span><span style={{color:C.sub,marginLeft:8,fontSize:11}}>{st.rol.replace(/_/g,' ')}</span></div>}<div style={{display:'flex',alignItems:'center',gap:6}}><span style={{color:C.sub,fontSize:11}}>−</span><input type="number" min="0" aria-label={`Pago de ${st.customRole?(st.roleName||'rol adicional'):st.name}`} style={{...s.inp,width:110,padding:'3px 6px',textAlign:'right',fontSize:12}} value={typeof st.pay==='number'?st.pay:''} onChange={e=>setStaffActivo(p=>p.map(x=>x.id===st.id?{...x,pay:parseInt(e.target.value)||0}:x))}/><button onClick={()=>setStaffActivo(p=>p.map(x=>x.id===st.id?{...x,activo:false}:x))} style={{background:'none',border:'none',cursor:'pointer',color:C.muted,fontSize:15,padding:'0 4px',lineHeight:1}} title="Quitar del turno">✕</button></div></div>
             ))}
+            <button type="button" style={{...s.btn(),alignSelf:'flex-start',fontSize:11,padding:'5px 9px'}} onClick={()=>setStaffActivo(p=>[...p,{id:uid(),name:'',roleName:'',rol:'otro',customRole:true,pay:0,activo:true,temporal:true}])}>+ Agregar otro rol</button>
+            {seguridadStaff.length>0&&<details style={{background:C.surface,borderRadius:8,padding:'8px 10px'}}><summary style={{cursor:'pointer',fontWeight:700,fontSize:12}}>Seguridad · {seguridadStaff.length} {seguridadStaff.length===1?'persona':'personas'} · Total {COP(totalSeguridad)}</summary><div style={{display:'flex',flexDirection:'column',gap:6,marginTop:8}}>{seguridadStaff.map((st,index)=><div key={st.id} style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}><input aria-label={`Nombre de seguridad ${index+1}`} style={{...s.inp,flex:'1 1 130px',minWidth:110,padding:'4px 6px',fontSize:12}} value={st.name||''} placeholder="Nombre" onChange={e=>setStaffActivo(p=>p.map(x=>x.id===st.id?{...x,name:e.target.value}:x))}/><input aria-label={`Pago de seguridad ${index+1}`} type="number" min="0" style={{...s.inp,width:110,padding:'3px 6px',textAlign:'right',fontSize:12}} value={typeof st.pay==='number'?st.pay:''} onChange={e=>setStaffActivo(p=>p.map(x=>x.id===st.id?{...x,pay:parseInt(e.target.value)||0}:x))}/><button onClick={()=>setStaffActivo(p=>p.map(x=>x.id===st.id?{...x,activo:false}:x))} style={{background:'none',border:'none',cursor:'pointer',color:C.muted,fontSize:15,padding:'0 4px',lineHeight:1}} title="Quitar del turno">✕</button></div>)}<button type="button" style={{...s.btn(),alignSelf:'flex-start',fontSize:11,padding:'5px 9px'}} onClick={()=>setStaffActivo(p=>[...p,{id:uid(),name:'',rol:'seguridad',pay:0,activo:true,temporal:true}])}>+ Agregar persona de seguridad</button></div></details>}
+            {seguridadStaff.length===0&&<button type="button" style={{...s.btn(),alignSelf:'flex-start',fontSize:11,padding:'5px 9px'}} onClick={()=>setStaffActivo(p=>[...p,{id:uid(),name:'',rol:'seguridad',pay:0,activo:true,temporal:true}])}>+ Agregar persona de seguridad</button>}
+            {seguridadStaff.length>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,padding:'2px 10px'}}><span style={{color:C.sub}}>Total Seguridad</span><strong style={{color:C.red}}>− {COP(totalSeguridad)}</strong></div>}
           </div>
           <div style={{marginTop:'1rem',padding:'10px 14px',background:C.red+'12',borderRadius:8,border:`1px solid ${C.red}30`,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <span style={{fontWeight:700,fontSize:13}}>Total a pagar Personal</span>
@@ -1263,7 +1801,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
       {tab==='bancos'&&(
         <div style={{display:'flex',flexDirection:'column',gap:'1rem'}}>
           <div style={s.card}>
-            <div style={{fontWeight:700,fontSize:13,marginBottom:'0.75rem'}}>Registrar transferencia con comprobante</div>
+            <div style={{fontWeight:700,fontSize:13,marginBottom:'0.75rem'}}>Registrar transferencia</div>
             <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:10,alignItems:'center'}}>
               <select style={s.sel} value={bForm.meseroId || authorizedMeseros[0]?.id || ''} onChange={e=>setBForm(p=>({...p,meseroId:e.target.value}))}>
                 <option value="">Selecciona un mesero activo</option>
@@ -1277,7 +1815,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
                 value={bForm.monto} onChange={e=>setBForm(p=>({...p,monto:e.target.value}))}/>
               <input style={s.inp} placeholder="Referencia (opcional)" value={bForm.ref} onChange={e=>setBForm(p=>({...p,ref:e.target.value}))}/>
               <label style={{...s.inp,display:'flex',alignItems:'center',cursor:'pointer',gap:8}}>
-                <span>{bForm.comprobante ? 'Comprobante listo' : 'Seleccionar foto del comprobante'}</span>
+                <span>{bForm.comprobante ? 'Comprobante listo' : 'Foto del comprobante (opcional)'}</span>
                 <input type="file" accept="image/*" capture="environment" onChange={handleBankReceipt} style={{display:'none'}}/>
               </label>
             </div>
@@ -1290,7 +1828,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
             {bankTransferMessage&&<div role="status" style={{color:C.green,fontSize:12,marginTop:8}}>{bankTransferMessage}</div>}
             {bankTransfersLoading&&<div style={{color:C.sub,fontSize:12,marginTop:8}}>Cargando transferencias del turno…</div>}
             <div style={{padding:'7px 10px',background:C.indigo+'12',borderRadius:8,fontSize:11,color:C.sub,border:`1px solid ${C.indigo}30`}}>
-              Registra cada transferencia por separado; cada comprobante queda relacionado con el mesero activo y la planilla de este turno.
+              Registra cada transferencia por separado y relaciónala con el mesero activo. La foto del comprobante es opcional.
             </div>
           </div>
           <div style={s.card}>
@@ -1371,6 +1909,22 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
             </div>
           )}
           <div style={s.card}>
+            <div style={{fontWeight:700,marginBottom:'0.35rem',fontSize:13}}>Ingresos registrados por Barra</div>
+            <div style={{fontSize:11,color:C.sub,marginBottom:10}}>Proveedor, hora y productos recibidos durante este turno.</div>
+            {turnoNovedadesError
+              ? <div role="alert" style={{color:C.red,fontSize:12}}>{turnoNovedadesError}</div>
+              : turnoNovedades.filter(item => String(item.texto || '').startsWith('Ingreso de inventario ·')).length
+                ? <div style={{display:'grid',gap:8}}>
+                  {turnoNovedades.filter(item => String(item.texto || '').startsWith('Ingreso de inventario ·')).map(item=>(
+                    <article key={item.id} style={{padding:'10px 12px',border:`1px solid ${C.green}35`,borderRadius:9,background:C.green+'08'}}>
+                      <time style={{display:'block',fontSize:10,color:C.green,fontWeight:700,marginBottom:5}}>{formatLocalTime(item.created_at)}</time>
+                      <div style={{fontSize:12,color:C.text2,lineHeight:1.5}}>{item.texto}</div>
+                    </article>
+                  ))}
+                </div>
+                : <div style={{fontSize:12,color:C.sub}}>Aún no se han registrado ingresos durante este turno.</div>}
+          </div>
+          <div style={s.card}>
             <div style={{fontWeight:700,marginBottom:'0.75rem',fontSize:13}}>Novedades del Turno</div>
             <div style={{fontSize:11,color:C.sub,marginBottom:8}}>Daños estructurales, fallas técnicas, situaciones especiales para los dueños.</div>
             <textarea style={{...s.inp,minHeight:150,resize:'vertical',lineHeight:1.6}} placeholder="Ej: Nevera 2 haciendo ruido anormal..." value={novedades} onChange={e=>setNovedades(e.target.value)}/>
@@ -1401,6 +1955,7 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
           pagoFijosStaff={pagoFijosStaff}
           barman={barman}
           dj={dj}
+          barraPaymentMode={barraPaymentMode}
           meseros={meseros}
         />
       )}
@@ -1432,8 +1987,8 @@ export default function Planilla({ negocio, onUpdateNegocio }) {
             {totalBilletes>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:13}}><span style={{color:C.sub}}>Diferencia</span><span style={{fontWeight:700,color:totalBilletes===neto?C.green:C.red}}>{totalBilletes===neto?'Exacto ✓':`${COP(Math.abs(totalBilletes-neto))} ${totalBilletes>neto?'sobrante':'faltante'}`}</span></div>}
           </div>
           <button style={{...s.btn('primary'),width:'100%',padding:12,fontSize:14,background:negocio.color,color:'#0b0b14'}} onClick={()=>{
-            const negatives=negocio.productos.filter(p=>{const m=movs[p.id]||{};if(m.existencias!==undefined)return m.existencias<0;return p.stock+(m.entradas||0)-(m.salidas||0)-(m.cortesia||0)<0;});
-            if(negatives.length>0){alert(`⚠ No se puede cerrar el turno.\n\nExistencias en negativo:\n${negatives.map(p=>{const m=movs[p.id]||{};return m.existencias!==undefined?`• ${p.name}: existencias ${m.existencias}`:`• ${p.name}: stock ${p.stock}, salidas ${(m.salidas||0)+(m.cortesia||0)}`;}).join('\n')}\n\nCorrige las existencias o registra las entradas.`);return;}
+            const negatives=productosPlanilla.filter(p=>existenciasProducto(p,movs[p.id])<0);
+            if(negatives.length>0){alert(`⚠ No se puede cerrar el turno.\n\nExistencias en negativo:\n${negatives.map(p=>`• ${p.name}: existencias ${existenciasProducto(p,movs[p.id])}`).join('\n')}\n\nCorrige las existencias o registra las entradas.`);return;}
             cerrarTurno();
           }}>🔒 Cerrar y Bloquear Planilla</button>
         </div>

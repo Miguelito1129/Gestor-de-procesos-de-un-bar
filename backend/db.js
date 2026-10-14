@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS promociones (
   nombre TEXT NOT NULL,
   tipo TEXT NOT NULL,
   producto_principal_id TEXT NOT NULL,
+  categoria_principal TEXT,
   producto_cortesia_id TEXT,
   productos_combo TEXT DEFAULT '[]',
   precio_promocional INTEGER,
@@ -72,7 +73,8 @@ CREATE TABLE IF NOT EXISTS transferencias (
 CREATE TABLE IF NOT EXISTS gastos (
   id TEXT PRIMARY KEY, negocio_id TEXT NOT NULL, planilla_id TEXT, fecha TEXT NOT NULL,
   desc TEXT NOT NULL, monto INTEGER NOT NULL, cat TEXT DEFAULT 'Otros', foto_url TEXT,
-  procesado INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  procesado INTEGER DEFAULT 0, insumos_detalle TEXT DEFAULT '[]',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS cxc (
   id TEXT PRIMARY KEY, negocio_id TEXT NOT NULL, deudor TEXT NOT NULL,
@@ -159,6 +161,9 @@ if (!promotionColumns.includes('productos_combo')) {
 if (!promotionColumns.includes('precio_promocional')) {
   db.exec('ALTER TABLE promociones ADD COLUMN precio_promocional INTEGER');
 }
+if (!promotionColumns.includes('categoria_principal')) {
+  db.exec('ALTER TABLE promociones ADD COLUMN categoria_principal TEXT');
+}
 
 const comandaColumns = db.prepare('PRAGMA table_info(comandas)').all().map(column => column.name);
 if (!comandaColumns.includes('consecutivo')) {
@@ -198,12 +203,17 @@ if (!transferColumns.includes('mesero_id')) {
   db.exec('ALTER TABLE transferencias ADD COLUMN mesero_id TEXT');
 }
 
+const expenseColumns = db.prepare('PRAGMA table_info(gastos)').all().map(column => column.name);
+if (!expenseColumns.includes('insumos_detalle')) {
+  db.exec("ALTER TABLE gastos ADD COLUMN insumos_detalle TEXT DEFAULT '[]'");
+}
+
 function encode(row) {
   return Object.fromEntries(Object.entries(row).map(([key, value]) => {
     if (typeof value !== 'string') return [key, value];
     if (['checklist', 'personal_detalle', 'banco_detalle', 'movimientos', 'gastos_detalle',
       'inventario_apertura', 'inventario_cierre', 'meseros_ids', 'turnos_incluidos', 'negocios', 'productos_combo',
-      'promociones_aplicadas'].includes(key)) {
+      'promociones_aplicadas', 'insumos_detalle'].includes(key)) {
       try { return [key, JSON.parse(value)]; } catch { return [key, value]; }
     }
     return [key, value];
@@ -215,7 +225,7 @@ function decode(data) {
     if (typeof value === 'boolean') return [key, value ? 1 : 0];
     if (value && typeof value === 'object' && ['checklist', 'personal_detalle', 'banco_detalle', 'movimientos',
       'gastos_detalle', 'inventario_apertura', 'inventario_cierre', 'meseros_ids', 'turnos_incluidos', 'negocios', 'productos_combo',
-      'promociones_aplicadas'].includes(key)) {
+      'promociones_aplicadas', 'insumos_detalle'].includes(key)) {
       return [key, JSON.stringify(value)];
     }
     return [key, value];

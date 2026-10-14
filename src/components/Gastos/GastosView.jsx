@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { C, s, COP } from "../../constants/theme.js";
+import { CAT_COLORS as PRODUCT_CATEGORIES } from "../../constants/roles.js";
 import { uid } from "../../utils/helpers.js";
-import { localFetch, localInsert, localDelete } from "../../lib/localApi.js";
+import { localFetch, localFetchOrThrow, localInsert, localDelete, localRegisterSupplyExpense } from "../../lib/localApi.js";
 import { Badge } from "../common/index.jsx";
 import UploadGasto from "../common/UploadGasto.jsx";
 
@@ -22,8 +23,12 @@ function getClosedExpenseIds(businessId) {
   }
 }
 
-export default function GastosView({ negocio }) {
+export default function GastosView({ negocio, onUpdateNegocio }) {
   const [gastos, setGastos] = useState([]);
+  const [productos, setProductos] = useState([]);
+  const [supplyLoading, setSupplyLoading] = useState(true);
+  const [supplyError, setSupplyError] = useState("");
+  const [turnoAbierto, setTurnoAbierto] = useState(false);
   const [closedExpenseIds, setClosedExpenseIds] = useState(() => getClosedExpenseIds(negocio.id));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -31,6 +36,14 @@ export default function GastosView({ negocio }) {
   const [message, setMessage] = useState("");
   const [receipt, setReceipt] = useState(null);
   const [form, setForm] = useState({ desc: "", monto: "", cat: "Insumos", fecha: today() });
+  const [supplyItems, setSupplyItems] = useState(() => [{
+    id: uid(),
+    mode: "existing",
+    productId: "",
+    quantity: "1",
+    costoUnitario: "",
+    newProduct: { name: "", cat: "Bebida", price: "", min: "0" },
+  }]);
   const [filters, setFilters] = useState({ search: "", cat: "Todas", desde: "", hasta: "", cierre: "todos" });
 
   const loadExpenses = useCallback(async () => {
@@ -48,12 +61,50 @@ export default function GastosView({ negocio }) {
       desc: gasto.desc || gasto.descripcion || "",
       monto: Number(gasto.monto) || 0,
       cat: gasto.cat || "Otros",
+      insumos_detalle: Array.isArray(gasto.insumos_detalle) ? gasto.insumos_detalle : [],
     })));
     setClosedExpenseIds(getClosedExpenseIds(negocio.id));
     setLoading(false);
   }, [negocio.id]);
 
   useEffect(() => { loadExpenses(); }, [loadExpenses]);
+
+  useEffect(() => {
+    let active = true;
+    let refreshTimer;
+    const refreshSupplyData = async () => {
+      try {
+        const [inventory, openTurns] = await Promise.all([
+          localFetchOrThrow("productos", `negocio_id=eq.${encodeURIComponent(negocio.id)}&select=id,name,cat,price,stock,min&order=name.asc`),
+          localFetchOrThrow("turnos", `negocio_id=eq.${encodeURIComponent(negocio.id)}&estado=eq.abierto&select=id&limit=1`),
+        ]);
+        if (!Array.isArray(inventory) || !Array.isArray(openTurns)) {
+          throw new Error("La respuesta del inventario o los turnos no es válida.");
+        }
+        if (active) {
+          setProductos(inventory);
+          setTurnoAbierto(openTurns.length > 0);
+          setSupplyError("");
+          setSupplyLoading(false);
+        }
+      } catch (loadError) {
+        console.error("No fue posible cargar el inventario para el registro de insumos:", loadError);
+        if (active) {
+          setSupplyError(loadError.message || "No fue posible verificar el inventario y el turno.");
+          setSupplyLoading(false);
+        }
+      } finally {
+        if (active) refreshTimer = window.setTimeout(refreshSupplyData, 3000);
+      }
+    };
+    setSupplyLoading(true);
+    setSupplyError("");
+    void refreshSupplyData();
+    return () => {
+      active = false;
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+    };
+  }, [negocio.id]);
 
   const filteredExpenses = useMemo(() => {
     const search = filters.search.trim().toLocaleLowerCase("es");
@@ -72,12 +123,83 @@ export default function GastosView({ negocio }) {
     .map(cat => ({ cat, total: filteredExpenses.filter(gasto => gasto.cat === cat).reduce((sum, gasto) => sum + gasto.monto, 0) }))
     .filter(item => item.total > 0), [filteredExpenses]);
 
+  const isSupplyExpense = form.cat === "Insumos";
+  const calculatedSupplyTotal = supplyItems.reduce((total, item) => {
+    const quantity = Number(item.quantity);
+    const unitCost = Number(item.costoUnitario);
+    const lineTotal = quantity * unitCost;
+    const nextTotal = total + lineTotal;
+    return Number.isSafeInteger(quantity) && quantity > 0 && Number.isSafeInteger(unitCost) && unitCost >= 0
+      && Number.isSafeInteger(lineTotal) && Number.isSafeInteger(nextTotal)
+      ? nextTotal
+      : Number.NaN;
+  }, 0);
+
   const saveManualExpense = async event => {
     event.preventDefault();
-    const amount = Number(form.monto);
-    if (!form.desc.trim() || !Number.isSafeInteger(amount) || amount <= 0 || !form.fecha || saving) {
-      setError("Completa la descripción, una fecha y un monto entero mayor que cero.");
+    const amount = isSupplyExpense ? calculatedSupplyTotal : Number(form.monto);
+    const isSupply = isSupplyExpense;
+    if ((!form.desc.trim() && !isSupply) || !Number.isSafeInteger(amount) || amount <= 0 || !form.fecha || saving) {
+      setError("Completa una descripción (salvo que registres insumos), fecha y monto entero mayor que cero.");
       return;
+    }
+    if (isSupply && (supplyLoading || supplyError || turnoAbierto)) {
+      setError(turnoAbierto
+        ? "Cierra el turno abierto antes de aumentar existencias desde Gastos. Durante el turno, los ajustes se hacen desde la planilla."
+        : supplyError || "Espera a que termine la verificación del inventario.");
+      return;
+    }
+    const resolvedSupplyItems = [];
+    if (isSupply) {
+      if (!supplyItems.length) {
+        setError("Agrega al menos un producto al ingreso de insumos.");
+        return;
+      }
+      for (const item of supplyItems) {
+        const productQuantity = Number(item.quantity);
+        if (!Number.isSafeInteger(productQuantity) || productQuantity <= 0) {
+          setError("Indica una cantidad entera mayor que cero para cada producto.");
+          return;
+        }
+        const unitCost = Number(item.costoUnitario);
+        if (item.costoUnitario === "" || !Number.isSafeInteger(unitCost) || unitCost < 0) {
+          setError("Indica el costo unitario de compra de cada producto.");
+          return;
+        }
+        if (item.mode === "existing") {
+          const selectedProduct = productos.find(product => String(product.id) === String(item.productId));
+          if (!selectedProduct) {
+            setError("Selecciona un producto válido del inventario en cada fila.");
+            return;
+          }
+          resolvedSupplyItems.push({
+            nombre: selectedProduct.name,
+            payload: { producto_id: selectedProduct.id, cantidad: productQuantity, costo_unitario: unitCost },
+          });
+        } else {
+          const product = item.newProduct;
+          if (!product.name.trim() || product.name.trim().length > 120
+            || !product.cat || product.price === "" || !Number.isSafeInteger(Number(product.price)) || Number(product.price) < 0
+            || product.min === "" || !Number.isSafeInteger(Number(product.min)) || Number(product.min) < 0) {
+            setError("Para cada producto nuevo, indica nombre, categoría, precio de venta y stock mínimo válido.");
+            return;
+          }
+          resolvedSupplyItems.push({
+            nombre: product.name.trim(),
+            payload: {
+              producto_nuevo: {
+                id: uid(),
+                name: product.name.trim(),
+                cat: product.cat,
+                price: Number(product.price),
+                min: Number(product.min),
+              },
+              cantidad: productQuantity,
+              costo_unitario: unitCost,
+            },
+          });
+        }
+      }
     }
 
     setSaving(true);
@@ -87,17 +209,62 @@ export default function GastosView({ negocio }) {
       id: uid(),
       negocio_id: negocio.id,
       fecha: form.fecha,
-      desc: form.desc.trim(),
+      desc: form.desc.trim() || (isSupply
+        ? `Compra de insumos: ${resolvedSupplyItems.map(item => `${item.nombre} x${item.payload.cantidad}`).join(", ")}`.slice(0, 160)
+        : ""),
       monto: amount,
       cat: form.cat,
       foto_url: null,
       procesado: false,
+      ...(isSupply ? {
+        insumos_detalle: resolvedSupplyItems.map(item => ({
+          nombre: item.nombre,
+          cantidad: item.payload.cantidad,
+          costo_unitario: item.payload.costo_unitario,
+          subtotal: item.payload.cantidad * item.payload.costo_unitario,
+        })),
+      } : {}),
     };
+    let savedProducts = [];
     try {
-      const saved = await localInsert("gastos", newExpense);
-      if (!saved) throw new Error("El servidor no guardó el gasto. Revisa la conexión e inténtalo de nuevo.");
+      if (isSupply) {
+        const result = await localRegisterSupplyExpense({
+          gasto: newExpense,
+          productos: resolvedSupplyItems.map(item => item.payload),
+        });
+        if (!Array.isArray(result?.productos) || !result.gasto) throw new Error("El servidor no confirmó el registro del gasto y el inventario.");
+        savedProducts = result.productos;
+        setProductos(current => {
+          const updated = new Map(current.map(product => [String(product.id), product]));
+          savedProducts.forEach(product => updated.set(String(product.id), product));
+          return [...updated.values()].sort((first, second) => String(first.name).localeCompare(String(second.name), "es"));
+        });
+        onUpdateNegocio({
+          ...negocio,
+          productos: (() => {
+            const updated = new Map(negocio.productos.map(product => [String(product.id), product]));
+            savedProducts.forEach(product => updated.set(String(product.id), product));
+            return [...updated.values()];
+          })(),
+        });
+      } else {
+        const saved = await localInsert("gastos", newExpense);
+        if (!saved) throw new Error("El servidor no guardó el gasto. Revisa la conexión e inténtalo de nuevo.");
+      }
       setForm(current => ({ ...current, desc: "", monto: "" }));
-      setMessage("Gasto guardado correctamente.");
+      if (isSupply) {
+        setSupplyItems([{
+          id: uid(),
+          mode: "existing",
+          productId: "",
+          quantity: "1",
+          costoUnitario: "",
+          newProduct: { name: "", cat: "Bebida", price: "", min: "0" },
+        }]);
+        setMessage(`Gasto guardado y se actualizaron las existencias de ${savedProducts.map(product => product.name).join(", ")}.`);
+      } else {
+        setMessage("Gasto guardado correctamente.");
+      }
       await loadExpenses();
     } catch (saveError) {
       setError(saveError.message || "No fue posible guardar el gasto.");
@@ -166,12 +333,103 @@ export default function GastosView({ negocio }) {
             </div>
             <label className="expenses-field">
               <span>Descripción</span>
-              <input style={s.inp} value={form.desc} maxLength={160} placeholder="Ej. Compra de hielo" onChange={event => setForm(current => ({ ...current, desc: event.target.value }))} />
+              <input style={s.inp} value={form.desc} maxLength={160} required={form.cat !== "Insumos"} placeholder={form.cat === "Insumos" ? "Opcional; se completa con el producto y la cantidad" : "Ej. Compra de hielo"} onChange={event => setForm(current => ({ ...current, desc: event.target.value }))} />
             </label>
+            {form.cat === "Insumos" && (
+              <div className="expenses-supply-fields">
+                {supplyItems.map((item, index) => (
+                  <div className="expenses-supply-item" key={item.id}>
+                    <div className="expenses-supply-item__heading">
+                      <strong>Producto {index + 1}</strong>
+                      {supplyItems.length > 1 && (
+                        <button type="button" className="expenses-supply-item__remove" disabled={saving} onClick={() => setSupplyItems(current => current.filter(supplyItem => supplyItem.id !== item.id))}>
+                          Quitar
+                        </button>
+                      )}
+                    </div>
+                    <div className="expenses-field">
+                      <span>Tipo de producto</span>
+                      <div className="expenses-supply-mode" role="group" aria-label={`Tipo del producto ${index + 1}`}>
+                        <button type="button" disabled={saving} className={item.mode === "existing" ? "is-active" : ""} onClick={() => setSupplyItems(current => current.map(supplyItem => supplyItem.id === item.id ? { ...supplyItem, mode: "existing" } : supplyItem))}>Del inventario</button>
+                        <button type="button" disabled={saving} className={item.mode === "new" ? "is-active" : ""} onClick={() => setSupplyItems(current => current.map(supplyItem => supplyItem.id === item.id ? { ...supplyItem, mode: "new" } : supplyItem))}>Producto nuevo</button>
+                      </div>
+                    </div>
+                    {item.mode === "existing" ? (
+                      <label className="expenses-field">
+                        <span>Selecciona del inventario</span>
+                        <select style={s.sel} value={item.productId} disabled={saving || supplyLoading || Boolean(supplyError) || turnoAbierto} onChange={event => setSupplyItems(current => current.map(supplyItem => supplyItem.id === item.id ? { ...supplyItem, productId: event.target.value } : supplyItem))}>
+                          <option value="">{supplyLoading ? "Cargando inventario…" : "Selecciona un producto"}</option>
+                          {productos.map(product => (
+                            <option key={product.id} value={product.id}>{product.name} · existencias {Number(product.stock) || 0}</option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : (
+                      <>
+                        <label className="expenses-field">
+                          <span>Nombre del producto nuevo</span>
+                          <input style={s.inp} value={item.newProduct.name} maxLength={120} placeholder="Ej. Hielo en bolsa" disabled={saving || supplyLoading || Boolean(supplyError) || turnoAbierto} onChange={event => setSupplyItems(current => current.map(supplyItem => supplyItem.id === item.id ? { ...supplyItem, newProduct: { ...supplyItem.newProduct, name: event.target.value } } : supplyItem))} />
+                        </label>
+                        <div className="expenses-field-row">
+                          <label className="expenses-field">
+                            <span>Categoría del producto</span>
+                            <select style={s.sel} value={item.newProduct.cat} disabled={saving || supplyLoading || Boolean(supplyError) || turnoAbierto} onChange={event => setSupplyItems(current => current.map(supplyItem => supplyItem.id === item.id ? { ...supplyItem, newProduct: { ...supplyItem.newProduct, cat: event.target.value } } : supplyItem))}>
+                              {Object.keys(PRODUCT_CATEGORIES).map(category => <option key={category} value={category}>{category}</option>)}
+                            </select>
+                          </label>
+                          <label className="expenses-field">
+                            <span>Precio de venta (COP)</span>
+                            <input style={s.inp} type="number" min="0" step="1" value={item.newProduct.price} placeholder="0" disabled={saving || supplyLoading || Boolean(supplyError) || turnoAbierto} onChange={event => setSupplyItems(current => current.map(supplyItem => supplyItem.id === item.id ? { ...supplyItem, newProduct: { ...supplyItem.newProduct, price: event.target.value } } : supplyItem))} />
+                          </label>
+                          <label className="expenses-field">
+                            <span>Stock mínimo</span>
+                            <input style={s.inp} type="number" min="0" step="1" value={item.newProduct.min} disabled={saving || supplyLoading || Boolean(supplyError) || turnoAbierto} onChange={event => setSupplyItems(current => current.map(supplyItem => supplyItem.id === item.id ? { ...supplyItem, newProduct: { ...supplyItem.newProduct, min: event.target.value } } : supplyItem))} />
+                          </label>
+                        </div>
+                      </>
+                    )}
+                    <div className="expenses-field-row">
+                      <label className="expenses-field">
+                        <span>Cantidad que ingresa al inventario</span>
+                        <input style={s.inp} type="number" min="1" step="1" value={item.quantity} disabled={saving || supplyLoading || Boolean(supplyError) || turnoAbierto} onChange={event => setSupplyItems(current => current.map(supplyItem => supplyItem.id === item.id ? { ...supplyItem, quantity: event.target.value } : supplyItem))} />
+                      </label>
+                      <label className="expenses-field">
+                        <span>Costo unitario de compra (COP)</span>
+                        <input style={s.inp} type="number" min="0" step="1" value={item.costoUnitario} placeholder="0" disabled={saving || supplyLoading || Boolean(supplyError) || turnoAbierto} onChange={event => setSupplyItems(current => current.map(supplyItem => supplyItem.id === item.id ? { ...supplyItem, costoUnitario: event.target.value } : supplyItem))} />
+                      </label>
+                    </div>
+                    <div className="expenses-supply-item__subtotal">
+                      Subtotal: {COP((Number(item.quantity) || 0) * (Number(item.costoUnitario) || 0))}
+                    </div>
+                  </div>
+                ))}
+                <button type="button" className="expenses-supply-add" disabled={saving || supplyLoading || Boolean(supplyError) || turnoAbierto || supplyItems.length >= 100} onClick={() => setSupplyItems(current => [...current, {
+                  id: uid(),
+                  mode: "existing",
+                  productId: "",
+                  quantity: "1",
+                  costoUnitario: "",
+                  newProduct: { name: "", cat: "Bebida", price: "", min: "0" },
+                }])}>
+                  + Agregar otro producto
+                </button>
+                {turnoAbierto && <div className="expenses-supply-notice" role="status">Hay un turno abierto. Registra ajustes de existencias desde la planilla activa.</div>}
+                {supplyError && <div className="expenses-supply-notice is-error" role="alert">No se puede registrar el insumo: {supplyError}</div>}
+              </div>
+            )}
             <div className="expenses-field-row">
               <label className="expenses-field">
                 <span>Monto (COP)</span>
-                <input style={s.inp} type="number" min="1" step="1" value={form.monto} placeholder="0" onChange={event => setForm(current => ({ ...current, monto: event.target.value }))} />
+                <input
+                  style={s.inp}
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={isSupplyExpense ? calculatedSupplyTotal : form.monto}
+                  placeholder="0"
+                  readOnly={isSupplyExpense}
+                  onChange={isSupplyExpense ? undefined : event => setForm(current => ({ ...current, monto: event.target.value }))}
+                />
               </label>
               <label className="expenses-field">
                 <span>Fecha</span>
@@ -184,7 +442,7 @@ export default function GastosView({ negocio }) {
                 {CATS.map(category => <option key={category}>{category}</option>)}
               </select>
             </label>
-            <button className="expenses-save-button" type="submit" disabled={saving}>
+            <button className="expenses-save-button" type="submit" disabled={saving || (form.cat === "Insumos" && (supplyLoading || Boolean(supplyError) || turnoAbierto))}>
               {saving ? "Guardando..." : "Guardar gasto"}
             </button>
           </form>
@@ -253,7 +511,18 @@ export default function GastosView({ negocio }) {
                     return (
                       <tr key={expense.id}>
                         <td>{expense.fecha}</td>
-                        <td className="expenses-table__description">{expense.desc}</td>
+                        <td className="expenses-table__description">
+                          {expense.desc}
+                          {expense.insumos_detalle?.length > 0 && (
+                            <ul className="expenses-table__supply-details">
+                              {expense.insumos_detalle.map((item, index) => (
+                                <li key={`${item.producto_id || item.nombre}-${index}`}>
+                                  {item.nombre} · {item.cantidad} × {COP(item.costo_unitario)} = {COP(item.subtotal)}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </td>
                         <td><Badge color={CAT_COLORS[expense.cat] || C.muted} small>{expense.cat}</Badge></td>
                         <td><span className={`expenses-status${closed ? " is-closed" : ""}`}><i/>{closed ? "En cierre" : "Pendiente"}</span></td>
                         <td>{expense.foto_url ? (

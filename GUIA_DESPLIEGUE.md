@@ -113,6 +113,10 @@ $env:PRINTER_BAUD_RATE = "9600"
 npm start
 ```
 
+La comanda se imprime cuando Barra selecciona «Autorizar y entregar». El mesero
+elige el medio de pago al enviar el pedido; al despacharlo, GestiónBar registra
+el pago y marca la comanda como pagada.
+
 Sustituye `COM3` por el puerto serial Bluetooth asignado a `Printer001` en Windows.
 No abras ese puerto en otra aplicación mientras GestiónBar está imprimiendo.
 
@@ -220,3 +224,8 @@ abierto.
 La API conserva las tablas históricas (`planillas`, `productos`, `gastos` y
 `staff`) y las tablas nuevas (`turnos`, `comandas`, `pagos`, inventario,
 descorches, gastos y cierres). El esquema se inicializa en [backend/db.js](./backend/db.js).
+
+La Planilla consulta el inventario actual de SQLite al abrir un turno y lo
+actualiza cada 1,5 segundos mientras permanece abierto. Las salidas se calculan
+comparando el inventario inicial y las entradas con las existencias actuales,
+que siguen siendo editables.

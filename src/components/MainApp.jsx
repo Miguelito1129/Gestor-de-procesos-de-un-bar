@@ -39,8 +39,8 @@ const INIT_NEGOCIOS = []; /*
     planillas:[{id:"h5",fecha:"2026-03-21",apertura:"21:30",cierre:"05:00",ventas:10355000,gastos:825000,bancos:3494000,extras:0,pendientes:0,personal:1692000,neto:8663000,novedades:""},{id:"h6",fecha:"2026-03-20",apertura:"20:00",cierre:"04:30",ventas:4450000,gastos:400000,bancos:1200000,extras:0,pendientes:0,personal:950000,neto:3625000,novedades:""},{id:"h7",fecha:"2026-03-19",apertura:"21:00",cierre:"04:00",ventas:5470000,gastos:512000,bancos:1800000,extras:0,pendientes:0,personal:1000000,neto:3454000,novedades:""}] },
 */ 
 
-const VIEWS_ADMIN    = [{id:'dashboard',label:'Dashboard'},{id:'planilla',label:'Planillas'},{id:'inventario',label:'Inventario'},{id:'promociones',label:'🏷️ Promociones'},{id:'gastos',label:'Gastos'},{id:'cierres',label:'📅 Cierres'},{id:'reportes',label:'📊 Reportes'},{id:'chat',label:'✦ IA'},{id:'usuarios',label:'👤 Usuarios'}];
-const VIEWS_GERENTE  = VIEWS_ADMIN.filter(view=>view.id!=='usuarios');
+const VIEWS_ADMIN    = [{id:'dashboard',label:'Dashboard'},{id:'planilla',label:'Planillas'},{id:'inventario',label:'Inventario'},{id:'promociones',label:'🏷️ Promociones'},{id:'gastos',label:'Gastos'},{id:'cierres',label:'📅 Cierres'},{id:'reportes',label:'📊 Reportes'}];
+const VIEWS_GERENTE  = VIEWS_ADMIN;
 const VIEWS_ADMIN_TURNO = [{id:'planilla',label:'Turno'}];
 const VIEWS_DUENO    = [{id:'dashboard',label:'Dashboard'},{id:'cierres',label:'📅 Cierres'},{id:'reportes',label:'📊 Reportes'},{id:'inventario',label:'Inventario'},{id:'planilla',label:'Historial'}];
 const VIEWS_BARRA    = [{id:'operacion',label:'Cola de barra'}];
@@ -62,15 +62,13 @@ const VIEW_ICONS = {
   gastos: '$',
   cierres: '◷',
   reportes: '▥',
-  chat: '✦',
-  usuarios: '♙',
   operacion: '🍸',
 };
 const SIDEBAR_STORAGE_KEY = 'gestionbar-sidebar-collapsed';
 
 // Menú "Más" para admin en móvil
-const MAS_ADMIN = [{id:'inventario',label:'Inventario',icon:'📦'},{id:'promociones',label:'Promociones',icon:'🏷️'},{id:'gastos',label:'Gastos',icon:'💸'},{id:'reportes',label:'Reportes',icon:'📊'},{id:'chat',label:'Asistente IA',icon:'✦'},{id:'usuarios',label:'Usuarios',icon:'👤'}];
-const MAS_GERENTE = MAS_ADMIN.filter(item=>item.id!=='usuarios');
+const MAS_ADMIN = [{id:'inventario',label:'Inventario',icon:'📦'},{id:'promociones',label:'Promociones',icon:'🏷️'},{id:'gastos',label:'Gastos',icon:'💸'},{id:'reportes',label:'Reportes',icon:'📊'}];
+const MAS_GERENTE = MAS_ADMIN;
 
 export default function MainApp() {
   const { user, logout } = useAuth();
@@ -236,11 +234,10 @@ export default function MainApp() {
       {view==='planilla'   && <Planilla key={negocio?.id} negocio={negocio} onUpdateNegocio={updateNegocio}/>}
       {view==='inventario' && <Inventario negocio={negocio} onUpdateNegocio={updated=>saveAndSync(updated,true)} readOnly={isJefe}/>}
       {view==='promociones' && (isAdmin||isManager) && <Promociones negocio={negocio}/>}
-      {view==='gastos'     && (isAdmin||isManager) && <GastosView negocio={negocio}/>}
+      {view==='gastos'     && (isAdmin||isManager) && <GastosView negocio={negocio} onUpdateNegocio={updateNegocio}/>}
       {view==='cierres'    && <CierreSemanal negocios={visibleNegs} negocioId={negocioId}/>}
       {view==='reportes'   && <Reports negocios={visibleNegs}/>}
       {view==='chat'       && (isAdmin||isManager) && <ChatbotIA negocio={negocio}/>}
-      {view==='usuarios'   && isAdmin && <div style={{color:C.sub,padding:'2rem',textAlign:'center',fontSize:14}}>Usa el botón 👤 en la barra de navegación para gestionar usuarios.</div>}
     </>
   );
 

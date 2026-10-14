@@ -85,12 +85,16 @@ table {
 
 .barra-order__authorize-slot {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 4px;
   min-height: 36px;
   min-width: 0;
 }
 
 .barra-order__authorize-slot > span { display: block; width: 100%; height: 36px; }
+.barra-order__authorize-slot > select { min-height: 30px; }
 
 @media (max-width: 768px) {
   .app-mobile {
@@ -556,7 +560,6 @@ table {
 }
 
 .barra-order-tab--enviada { color: #fbbf24; }
-.barra-order-tab--entregada_falta_pago { color: #a5b4fc; }
 .barra-order-tab--pagada { color: #34d399; }
 .barra-order-tab--cancelada { color: #f87171; }
 .barra-order-tab.is-active { border-color: #818cf8; background: rgba(129, 140, 248, .14); color: #e0e7ff; }
@@ -604,18 +607,75 @@ table {
 }
 
 .waiter-order-tab--enviada { color: #fbbf24; }
-.waiter-order-tab--entregada_falta_pago { color: #a5b4fc; }
 .waiter-order-tab--pagada { color: #34d399; }
 .waiter-order-tab--cancelada { color: #f87171; }
 .waiter-order-tab.is-active { border-color: #818cf8; background: rgba(129, 140, 248, .14); color: #e0e7ff; }
 .waiter-order-tab--enviada.is-active { border-color: rgba(245, 158, 11, .65); background: rgba(245, 158, 11, .12); color: #fbbf24; }
-.waiter-order-tab--entregada_falta_pago.is-active { border-color: rgba(129, 140, 248, .55); background: rgba(129, 140, 248, .12); color: #a5b4fc; }
 .waiter-order-tab--pagada.is-active { border-color: rgba(52, 211, 153, .5); background: rgba(52, 211, 153, .1); color: #34d399; }
 .waiter-order-tab--cancelada.is-active { border-color: rgba(248, 113, 113, .5); background: rgba(248, 113, 113, .1); color: #f87171; }
 .waiter-order-tab.is-active b { background: #818cf8; color: #121226; }
 .waiter-order-tab--enviada.is-active b { background: #f59e0b; color: #17120a; }
 .waiter-order-tab--pagada.is-active b { background: #34d399; color: #062016; }
 .waiter-order-tab--cancelada.is-active b { background: #f87171; color: #240b0b; }
+
+.waiter-workspace-nav {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 5px;
+  border: 1px solid rgba(129, 140, 248, .18);
+  border-radius: 12px;
+  background: rgba(15, 15, 31, .78);
+}
+.waiter-workspace-nav__tab {
+  display: inline-flex;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: #a4a4b8;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.waiter-workspace-nav__tab.is-active {
+  border-color: rgba(129, 140, 248, .38);
+  background: rgba(129, 140, 248, .15);
+  color: #e0e7ff;
+}
+.waiter-workspace-nav__tab span {
+  display: grid;
+  min-width: 21px;
+  height: 21px;
+  padding: 0 5px;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(129, 140, 248, .22);
+  color: #c7d2fe;
+  font-size: 10px;
+}
+.waiter-promotions__empty {
+  padding: 30px 16px;
+  border: 1px dashed rgba(129, 140, 248, .24);
+  border-radius: 12px;
+  color: #9896a4;
+  font-size: 13px;
+  text-align: center;
+}
+.waiter-promotion__warning {
+  display: block;
+  margin-top: 9px;
+  padding: 8px 9px;
+  border: 1px solid rgba(245, 158, 11, .3);
+  border-radius: 8px;
+  background: rgba(245, 158, 11, .08);
+  color: #fbbf24 !important;
+}
 
 .waiter-orders-panel { min-width: 0; }
 .waiter-orders-empty { padding: 22px 12px; color: #94a3b8; font-size: 13px; text-align: center; }
@@ -640,7 +700,6 @@ table {
   background: linear-gradient(120deg, rgba(245, 158, 11, .09), rgba(16, 16, 33, .55) 55%);
 }
 
-.barra-order-group--entregada_falta_pago { border-color: rgba(129, 140, 248, .35); }
 .barra-order-group--pagada { border-color: rgba(52, 211, 153, .25); }
 .barra-order-group--cancelada { border-color: rgba(248, 113, 113, .2); }
 
@@ -763,6 +822,9 @@ table {
 }
 
 .planilla-view-button:hover { background: rgba(129, 140, 248, .20); border-color: #818cf8; }
+.planilla-detail-tabs { display: flex; gap: 7px; margin: 0 0 14px; overflow-x: auto; }
+.planilla-detail-tabs > button { min-height: 36px; padding: 7px 12px; border: 1px solid rgba(148, 163, 184, .17); border-radius: 9px; background: rgba(16, 16, 33, .8); color: #94a3b8; font-size: 12px; font-weight: 750; cursor: pointer; }
+.planilla-detail-tabs > button.is-active { border-color: rgba(129, 140, 248, .55); background: rgba(129, 140, 248, .14); color: #e0e7ff; }
 
 .planilla-home { display: flex; flex-direction: column; gap: 18px; }
 .planilla-home__hero {
@@ -840,6 +902,28 @@ table {
 .barra-waiter-access__notice { margin-bottom: 10px; border-color: rgba(251, 191, 36, .22); background: rgba(251, 191, 36, .05); color: #fbbf24; }
 .barra-waiter-access__message { margin-bottom: 10px; padding: 8px 10px; border: 1px solid rgba(52, 211, 153, .2); border-radius: 8px; background: rgba(52, 211, 153, .06); color: #6ee7b7; font-size: 11px; }
 .barra-waiter-access__message.is-error { border-color: rgba(248, 113, 113, .25); background: rgba(248, 113, 113, .07); color: #fca5a5; }
+.barra-inventory-intake { padding: 16px; border: 1px solid rgba(52, 211, 153, .18); border-radius: 15px; background: linear-gradient(145deg, #17171f, #111116); }
+.barra-inventory-intake__description,
+.barra-inventory-intake__row label { display: grid; gap: 6px; color: #cbd5e1; font-size: 11px; font-weight: 750; }
+.barra-inventory-intake__description { max-width: 520px; margin-bottom: 14px; }
+.barra-inventory-intake input,
+.barra-inventory-intake select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid rgba(148, 163, 184, .2); border-radius: 8px; background: #10101b; color: #f1f5f9; font: inherit; }
+.barra-inventory-intake__items { display: grid; gap: 9px; }
+.barra-inventory-intake__row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(120px, 180px) auto; align-items: end; gap: 9px; padding: 10px; border: 1px solid rgba(148, 163, 184, .12); border-radius: 10px; background: rgba(15, 15, 26, .6); }
+.barra-inventory-intake__remove,
+.barra-inventory-intake__add { min-height: 38px; padding: 7px 10px; border: 1px solid rgba(148, 163, 184, .2); border-radius: 8px; background: rgba(148, 163, 184, .06); color: #cbd5e1; font-size: 11px; font-weight: 750; cursor: pointer; }
+.barra-inventory-intake__remove { color: #fca5a5; }
+.barra-inventory-intake__actions { display: flex; justify-content: space-between; gap: 9px; margin-top: 12px; }
+.barra-inventory-intake__message { margin-top: 12px; padding: 10px 12px; border-radius: 9px; font-size: 12px; line-height: 1.5; }
+.barra-inventory-intake__message.is-success { border: 1px solid rgba(52, 211, 153, .24); background: rgba(52, 211, 153, .07); color: #6ee7b7; }
+.barra-inventory-intake__message.is-error { border: 1px solid rgba(248, 113, 113, .24); background: rgba(248, 113, 113, .07); color: #fca5a5; }
+@media (max-width: 600px) {
+  .barra-inventory-intake { padding: 12px; }
+  .barra-inventory-intake__row { grid-template-columns: minmax(0, 1fr) minmax(90px, 115px); }
+  .barra-inventory-intake__remove { grid-column: 1 / -1; justify-self: end; }
+  .barra-inventory-intake__actions { flex-direction: column; }
+  .barra-inventory-intake__actions > button { width: 100%; }
+}
 .planilla-order-tabs { margin-top: 12px; }
 .planilla-order { padding: 16px 6px; }
 .planilla-order__summary { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; }
@@ -2077,6 +2161,20 @@ body {
 
 .expenses-manual { display: grid; gap: 10px; }
 .expenses-manual .expenses-panel__heading { margin-bottom: 2px; }
+.expenses-supply-fields { display: grid; gap: 10px; padding: 12px; border: 1px solid rgba(163,148,255,.18); border-radius: 11px; background: rgba(163,148,255,.035); }
+.expenses-supply-item { display: grid; gap: 9px; padding: 10px; border: 1px solid rgba(255,255,255,.08); border-radius: 9px; background: rgba(0,0,0,.12); }
+.expenses-supply-item__heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #d6d1e1; font-size: 10px; }
+.expenses-supply-item__remove { border: 0; background: transparent; color: #ff929c; font: inherit; font-size: 9px; cursor: pointer; }
+.expenses-supply-item__remove:disabled { cursor: wait; opacity: .55; }
+.expenses-supply-item__subtotal { color: #c5bcff; font-size: 10px; font-weight: 750; text-align: right; }
+.expenses-supply-mode { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.expenses-supply-mode button { min-height: 32px; padding: 0 10px; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; background: rgba(255,255,255,.035); color: #aaa7b4; font: inherit; font-size: 10px; cursor: pointer; }
+.expenses-supply-mode button.is-active { border-color: rgba(163,148,255,.38); background: rgba(163,148,255,.12); color: #d0c8ff; }
+.expenses-supply-mode button:disabled { cursor: wait; opacity: .6; }
+.expenses-supply-add { min-height: 35px; border: 1px dashed rgba(163,148,255,.32); border-radius: 8px; background: rgba(163,148,255,.05); color: #c5bcff; font: inherit; font-size: 10px; font-weight: 750; cursor: pointer; }
+.expenses-supply-add:disabled { cursor: wait; opacity: .55; }
+.expenses-supply-notice { padding: 9px 10px; border: 1px solid rgba(255,196,92,.2); border-radius: 8px; background: rgba(255,196,92,.05); color: #ffd27e; font-size: 10px; line-height: 1.5; }
+.expenses-supply-notice.is-error { border-color: rgba(255,114,127,.24); background: rgba(255,114,127,.05); color: #ff929c; }
 .expenses-field { display: grid; min-width: 0; gap: 5px; }
 .expenses-field > span { color: #aaa7b4; font-size: 9px; font-weight: 750; }
 .expenses-field input,
@@ -2122,6 +2220,7 @@ body {
 .expenses-table td.is-number { text-align: right; white-space: nowrap; }
 .expenses-table .is-amount { color: #ff8993; font-weight: 800; }
 .expenses-table__description { max-width: 220px; overflow-wrap: anywhere; color: #f0edf6 !important; font-weight: 650; }
+.expenses-table__supply-details { display: grid; gap: 3px; margin: 6px 0 0; padding-left: 15px; color: #aaa7b4; font-size: 9px; font-weight: 500; }
 
 .expenses-status { display: inline-flex; align-items: center; gap: 5px; color: #ffd27e; font-size: 9px; white-space: nowrap; }
 .expenses-status i { width: 6px; height: 6px; border-radius: 50%; background: #ffc45c; box-shadow: 0 0 8px rgba(255,196,92,.35); }
@@ -3451,6 +3550,76 @@ textarea:focus {
   background: rgba(9, 16, 26, .4) !important;
 }
 
+.order-page-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.order-page-grid > * {
+  min-width: 0;
+  margin: 0 !important;
+}
+
+.order-page-grid > .barra-order {
+  padding: 12px !important;
+  border: 1px solid rgba(132, 157, 190, .14);
+  border-radius: 10px;
+  background: linear-gradient(145deg, rgba(23, 35, 51, .5), rgba(13, 22, 34, .65));
+}
+
+.order-page-grid .barra-order__summary {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 8px;
+}
+
+.order-page-grid .barra-order__identity,
+.order-page-grid .barra-order__actions {
+  grid-column: 1 / -1;
+}
+
+.order-page-grid .barra-order__status {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.order-page-grid .barra-order__total {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.order-page-grid .barra-order__actions {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  width: 100%;
+}
+
+.order-page-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 12px;
+  overflow-x: auto;
+  padding: 2px 1px 6px;
+}
+
+.order-page-tab {
+  min-width: 34px;
+  min-height: 34px;
+  padding: 5px 9px;
+  border: 1px solid rgba(132, 157, 190, .18);
+  border-radius: 8px;
+  background: rgba(141, 164, 194, .07);
+  color: #a1b0c3;
+  font-size: 12px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.order-page-tab.is-active {
+  border-color: rgba(247, 183, 93, .42);
+  background: rgba(247, 183, 93, .15);
+  color: #f4c985;
+}
+
 .waiter-order-card {
   margin: 0 0 12px !important;
   padding: 16px 18px !important;
@@ -3543,7 +3712,6 @@ textarea:focus {
 .barra-order__authorize-slot,
 .barra-order__authorize-slot > span {
   min-height: 40px;
-  height: 40px;
 }
 
 .barra-order-details {
@@ -3640,6 +3808,10 @@ textarea:focus {
 }
 
 @media (max-width: 768px) {
+  .order-page-grid .barra-order__actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .waiter-product-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
     gap: 6px !important;

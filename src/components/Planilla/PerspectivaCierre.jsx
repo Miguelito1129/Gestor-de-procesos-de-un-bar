@@ -30,7 +30,7 @@ export default function PerspectivaCierre({
   pctBarra, pctMeseros, extras, pendientes, apertura,
   totalVentas, totalBancos, totalGastosT, totalPersonal, neto,
   pagoBarra, pagoDJ, pagoMeseros, pagoFijosStaff,
-  barman, dj, meseros,
+  barman, dj, barraPaymentMode, meseros,
 }) {
   const fecha     = new Date().toLocaleDateString('es-CO',{weekday:'long',day:'numeric',month:'long'});
   const horaActual= new Date().toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'});
@@ -66,14 +66,19 @@ export default function PerspectivaCierre({
   /* ── Desglose de personal ────────────────────────────────────────────── */
   const personalRows = [];
   if (barman && pagoBarra > 0)
-    personalRows.push({ name: barman.name, rol: 'barra', pago: pagoBarra, nota: `${pctBarra}% ventas` });
+    personalRows.push({
+      name: barman.name,
+      rol: 'barra',
+      pago: pagoBarra,
+      nota: barraPaymentMode === 'commission' ? `${pctBarra}% ventas` : 'Pago fijo',
+    });
   if (dj && pagoDJ > 0)
-    personalRows.push({ name: dj.name, rol: 'dj', pago: pagoDJ });
+    personalRows.push({ name: dj.name, rol: 'dj', pago: pagoDJ, nota: 'Pago fijo' });
   pagoMeseros.filter(m=>m.pago>0).forEach(m =>
     personalRows.push({ name: m.name, rol: 'mesero', pago: m.pago, nota: `${pctMeseros}% de ${COP(m.venta||0)}` })
   );
   pagoFijosStaff.filter(p=>typeof p.pay==='number'&&p.pay>0).forEach(p =>
-    personalRows.push({ name: p.name, rol: p.rol, pago: p.pay })
+    personalRows.push({ name: p.name, rol: p.customRole ? (p.roleName?.trim() || 'Otro') : p.rol, pago: p.pay })
   );
 
   /* ── Gastos con monto > 0 ────────────────────────────────────────────── */

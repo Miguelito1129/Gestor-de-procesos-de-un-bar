@@ -2,10 +2,11 @@ import { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { C, s, COP } from "../../constants/theme.js";
 import { CAT_COLORS } from "../../constants/roles.js";
 import { uid } from "../../utils/helpers.js";
-import { localDeleteProductos, localInsert } from "../../lib/localApi.js";
+import { localDeleteProductos, localFetchOrThrow, localInsert } from "../../lib/localApi.js";
 import { Badge } from "../common/index.jsx";
 
 export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
+  const [turnStatus, setTurnStatus] = useState({ checking: true, isOpen: false, error: '' });
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('Todos');
   const [stockFilter, setStockFilter] = useState('Todos');
@@ -27,8 +28,49 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
       .map(({ _originalIndex, ...product }) => product),
     [negocio.productos]
   );
-  const setProductos = useCallback(fn => onUpdateNegocio({...negocio, productos: typeof fn==='function'?fn(negocio.productos):fn}), [negocio, onUpdateNegocio]);
-  const canReorder = !readOnly && !search && catFilter === 'Todos' && stockFilter === 'Todos';
+  useEffect(() => {
+    let active = true;
+    let refreshTimer;
+    const refreshTurnStatus = async () => {
+      try {
+        const turns = await localFetchOrThrow(
+          'turnos',
+          `negocio_id=eq.${encodeURIComponent(negocio.id)}&estado=eq.abierto&select=id&limit=1`,
+        );
+        if (!Array.isArray(turns)) throw new Error('La respuesta de turnos no es válida.');
+        if (active) setTurnStatus({ checking: false, isOpen: turns.length > 0, error: '' });
+      } catch (error) {
+        console.error('No fue posible verificar si hay un turno abierto antes de editar el inventario:', error);
+        if (active) setTurnStatus({
+          checking: false,
+          isOpen: false,
+          error: error.message || 'No fue posible verificar el estado del turno.',
+        });
+      } finally {
+        if (active) refreshTimer = window.setTimeout(refreshTurnStatus, 1500);
+      }
+    };
+    void refreshTurnStatus();
+    return () => {
+      active = false;
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+    };
+  }, [negocio.id]);
+
+  const inventoryLocked = Boolean(readOnly || turnStatus.checking || turnStatus.isOpen || turnStatus.error);
+  const inventoryLockedRef = useRef(inventoryLocked);
+  inventoryLockedRef.current = inventoryLocked;
+  const setProductos = useCallback(fn => {
+    if (inventoryLockedRef.current) return;
+    onUpdateNegocio({...negocio, productos: typeof fn==='function'?fn(negocio.productos):fn});
+  }, [negocio, onUpdateNegocio]);
+  const canReorder = !inventoryLocked && !search && catFilter === 'Todos' && stockFilter === 'Todos';
+  useEffect(() => {
+    if (inventoryLockedRef.current) {
+      setShowAdd(false);
+      setShowConfirmBorrar(false);
+    }
+  }, [inventoryLocked]);
   useEffect(() => () => window.clearTimeout(dragTimerRef.current), []);
   const startProductDrag = (event, productId) => {
     if (!canReorder || event.button !== 0) return;
@@ -138,6 +180,11 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
 
   const handleImport = async e => {
     const file = e.target.files[0]; if(!file) return;
+    if (inventoryLockedRef.current) {
+      setImportMsg('⚠ El inventario está bloqueado mientras haya un turno abierto o no se pueda verificar su estado.');
+      e.target.value='';
+      return;
+    }
     setImportMsg('Cargando archivo...');
     try {
       const XLSX = await loadXLSX();
@@ -170,7 +217,15 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
         setImportMsg(`⚠ Sin productos válidos. Columnas detectadas: ${cols}. Descarga la Plantilla para ver el formato correcto.`);
         return;
       }
+      if (inventoryLockedRef.current) {
+        setImportMsg('⚠ El turno se abrió mientras se procesaba el archivo. No se modificó el inventario.');
+        return;
+      }
       if(window.confirm(`Se encontraron ${newP.length} productos.\n\nAceptar = Reemplazar inventario completo\nCancelar = Agregar a los existentes`)){
+        if (inventoryLockedRef.current) {
+          setImportMsg('⚠ El turno se abrió antes de confirmar la importación. No se modificó el inventario.');
+          return;
+        }
         await localDeleteProductos(negocio.id);
         setProductos(newP);
       } else {
@@ -191,14 +246,19 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
           <span className="inventory-hero__eyebrow">CONTROL DE PRODUCTOS</span>
           <div className="inventory-hero__title-row">
             <h1>Inventario</h1>
-            {readOnly&&<Badge color={C.sub} small>Solo lectura</Badge>}
+            {inventoryLocked&&<Badge color={C.sub} small>{readOnly?'Solo lectura':turnStatus.checking?'Verificando turno…':turnStatus.error?'Bloqueado':'Turno abierto'}</Badge>}
           </div>
-          <p>{negocio.name} · Revisa existencias, precios y alertas de stock en un solo lugar.</p>
+          <p>{negocio.name} · {turnStatus.isOpen?'El inventario se modifica desde la planilla del turno abierto.':'Revisa existencias, precios y alertas de stock en un solo lugar.'}</p>
         </div>
-        {!readOnly&&<button className="inventory-primary-action" type="button" onClick={()=>setShowAdd(!showAdd)}>
-          <span aria-hidden="true">{showAdd?'×':'＋'}</span>{showAdd?'Cerrar':'Agregar producto'}
-        </button>}
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          {!inventoryLocked&&<button className="inventory-primary-action" type="button" onClick={()=>setShowAdd(!showAdd)}>
+            <span aria-hidden="true">{showAdd?'×':'＋'}</span>{showAdd?'Cerrar':'Agregar producto'}
+          </button>}
+        </div>
       </header>
+      {turnStatus.error&&<div role="alert" className="inventory-message is-warning">No se puede editar el inventario: {turnStatus.error}</div>}
+      {turnStatus.checking&&<div role="status" className="inventory-message is-warning">Verificando si hay un turno abierto; la edición permanecerá bloqueada durante la comprobación.</div>}
+      {turnStatus.isOpen&&<div role="status" className="inventory-message is-warning">🔒 Turno abierto: el inventario inicial y las existencias se corrigen desde la Planilla activa.</div>}
 
       <div className="inventory-summary">
         <div className="inventory-summary__item">
@@ -230,10 +290,10 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
           <select style={s.sel} value={catFilter} onChange={e=>setCatFilter(e.target.value)}>{cats.map(c=><option key={c}>{c}</option>)}</select>
         </label>
         {!readOnly&&<div className="inventory-tools">
-          <button type="button" onClick={()=>fileRef.current?.click()} title="Importar productos desde Excel">↥ <span>Importar</span></button>
+          {!inventoryLocked&&<button type="button" onClick={()=>fileRef.current?.click()} title="Importar productos desde Excel">↥ <span>Importar</span></button>}
           <button type="button" onClick={downloadInventario} title="Descargar inventario actual en Excel">↧ <span>Exportar</span></button>
-          <button type="button" onClick={downloadTemplate} title="Descargar plantilla de Excel">▤ <span>Plantilla</span></button>
-          <button type="button" className="inventory-tools__danger" onClick={()=>setShowConfirmBorrar(true)} title="Borrar todo el inventario">× <span>Borrar todo</span></button>
+          {!inventoryLocked&&<button type="button" onClick={downloadTemplate} title="Descargar plantilla de Excel">▤ <span>Plantilla</span></button>}
+          {!inventoryLocked&&<button type="button" className="inventory-tools__danger" onClick={()=>setShowConfirmBorrar(true)} title="Borrar todo el inventario">× <span>Borrar todo</span></button>}
           <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" style={{display:'none'}} onChange={handleImport}/>
         </div>}
       </div>
@@ -246,7 +306,7 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
         ))}
         <span className="inventory-result-count">Mostrando <strong>{filtered.length}</strong> de {productos.length}</span>
       </div>
-      {!readOnly && (
+      {!inventoryLocked && (
         <div className="inventory-order-hint">
           {canReorder
             ? "Mantén presionada el asa ⋮⋮ y arrastra cada producto hasta la posición deseada."
@@ -277,6 +337,11 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
           <div style={{fontSize:12,color:C.sub,marginBottom:12}}>Borrará todos los productos de este negocio en SQLite. No se puede deshacer.</div>
           <div style={{display:'flex',gap:8}}>
             <button style={s.btn('danger')} onClick={async()=>{
+              if (inventoryLockedRef.current) {
+                setImportMsg('⚠ El inventario está bloqueado mientras haya un turno abierto.');
+                setShowConfirmBorrar(false);
+                return;
+              }
               await localDeleteProductos(negocio.id);
               setProductos([]);
               setShowConfirmBorrar(false);
@@ -287,9 +352,9 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
         </div>
       )}
 
-      {!readOnly&&<div style={{marginBottom:'0.75rem',padding:'7px 12px',background:C.surface,borderRadius:8,fontSize:11,color:C.sub,border:`1px solid ${C.border}`}}>📋 <strong style={{color:C.text}}>Formato Excel:</strong> columnas <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>nombre</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>categoria</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>precio</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>stock</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>minimo</code></div>}
+      {!inventoryLocked&&<div style={{marginBottom:'0.75rem',padding:'7px 12px',background:C.surface,borderRadius:8,fontSize:11,color:C.sub,border:`1px solid ${C.border}`}}>📋 <strong style={{color:C.text}}>Formato Excel:</strong> columnas <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>nombre</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>categoria</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>precio</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>stock</code>, <code style={{background:C.border,padding:'1px 5px',borderRadius:4}}>minimo</code></div>}
 
-      {showAdd&&!readOnly&&(
+      {showAdd&&!inventoryLocked&&(
         <div className="inventory-add-panel">
           <div className="inventory-add-panel__heading"><span>＋</span><div><strong>Nuevo producto</strong><p>Agrega un producto y define su nivel de inventario.</p></div></div>
           <div className="inventory-add-panel__fields">
@@ -325,7 +390,7 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
         ):(
           <div className="inventory-table-wrap">
             <table className="inventory-table">
-              <thead><tr>{['Producto','Categoría','Precio de venta','Existencias','Mínimo','Estado',...(!readOnly?['Orden']:[]),''].map(h=><th key={h}>{h}</th>)}</tr></thead>
+              <thead><tr>{['Producto','Categoría','Precio de venta','Existencias','Mínimo','Estado',...(!inventoryLocked?['Orden']:[]),''].map(h=><th key={h}>{h}</th>)}</tr></thead>
               <tbody>
                 {filtered.map((p,i)=>{
                   const productIndex = productos.findIndex(product => product.id === p.id);
@@ -351,20 +416,22 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
                       </td>
                       <td><Badge color={CAT_COLORS[p.cat]||C.muted} small>{p.cat}</Badge></td>
                       <td>
-                        {readOnly
+                        {inventoryLocked
                           ? <strong className="inventory-price">{p.price>0?COP(p.price):'—'}</strong>
                           : <label className="inventory-inline-field"><span className="inventory-inline-field__prefix">$</span><input aria-label={`Precio de ${p.name}`} type="number" min="0" value={p.price} onChange={e=>setProductos(prev=>prev.map(x=>x.id===p.id?{...x,price:Math.max(0,parseInt(e.target.value)||0)}:x))}/></label>
                         }
                       </td>
                       <td>
                         <div className="inventory-stock-cell">
-                          {readOnly?<strong className="inventory-stock-value" style={{color}}>{stock}</strong>:<label className={`inventory-inline-field inventory-inline-field--stock${out?' is-out':lowS?' is-low':''}`}><input aria-label={`Existencias de ${p.name}`} type="number" min="0" value={p.stock} onChange={e=>setProductos(prev=>prev.map(x=>x.id===p.id?{...x,stock:Math.max(0,parseInt(e.target.value)||0)}:x))}/><span>uds.</span></label>}
+                          {inventoryLocked
+                            ? <strong className="inventory-stock-value" style={{color}}>{stock}</strong>
+                            : <label className={`inventory-inline-field inventory-inline-field--stock${out?' is-out':lowS?' is-low':''}`}><input aria-label={`Existencias de ${p.name}`} type="number" min="0" value={p.stock} onChange={e=>setProductos(prev=>prev.map(x=>x.id===p.id?{...x,stock:Math.max(0,parseInt(e.target.value)||0)}:x))}/><span>uds.</span></label>}
                           <span className="inventory-stock-track"><i style={{width:`${progress}%`,backgroundColor:color}}/></span>
                         </div>
                       </td>
                       <td><span className="inventory-minimum">{minimum} uds.</span></td>
                       <td><span className={`inventory-status${out?' is-out':lowS?' is-low':' is-good'}`}><i/>{status}</span></td>
-                      {!readOnly&&<td>
+                      {!inventoryLocked&&<td>
                         <div className="inventory-order-controls">
                           <button
                             type="button"
@@ -379,7 +446,7 @@ export default function Inventario({ negocio, onUpdateNegocio, readOnly }) {
                           <span>{productIndex+1}</span>
                         </div>
                       </td>}
-                      <td>{!readOnly&&<button className="inventory-delete" type="button" onClick={()=>setProductos(prev=>prev.filter(x=>x.id!==p.id))} aria-label={`Eliminar ${p.name}`} title="Eliminar producto">×</button>}</td>
+                      <td>{!inventoryLocked&&<button className="inventory-delete" type="button" onClick={()=>setProductos(prev=>prev.filter(x=>x.id!==p.id))} aria-label={`Eliminar ${p.name}`} title="Eliminar producto">×</button>}</td>
                     </tr>
                   );
                 })}

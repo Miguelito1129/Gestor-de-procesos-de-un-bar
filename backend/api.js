@@ -9,6 +9,7 @@ const router = express.Router();
 const PRINTER_NAME = 'Printer001';
 const PRINTER_PORT = process.env.PRINTER_PORT || 'COM3';
 const PRINTER_BAUD_RATE = Number(process.env.PRINTER_BAUD_RATE || 9600);
+const INVENTORY_INTAKE_REASONS = new Set(['Solicitud a proveedor', 'Préstamo']);
 let printQueue = Promise.resolve();
 const allowedTables = new Set([
   'negocios', 'usuarios', 'staff', 'productos', 'promociones', 'planillas', 'transferencias', 'gastos', 'gastos_fijos', 'cxc', 'turnos',
@@ -381,9 +382,9 @@ function tableOrFail(req, res, next) {
   if (!isManager) {
     if (table === 'negocios' && method === 'GET') return next();
     const allowed = ['mesero', 'mesero_fijo'].includes(role)
-      ? { GET: ['usuarios', 'productos', 'promociones', 'turnos', 'comandas', 'comanda_items', 'pagos'], POST: ['comandas', 'comanda_items', 'pagos'], PATCH: ['comandas', 'comanda_items', 'pagos'], DELETE: ['comandas', 'comanda_items'] }
+      ? { GET: ['usuarios', 'productos', 'promociones', 'turnos', 'comandas', 'comanda_items'], POST: ['comandas', 'comanda_items'], PATCH: [], DELETE: [] }
       : ['barra', 'barra_fija'].includes(role)
-        ? { GET: ['usuarios', 'productos', 'promociones', 'turnos', 'comandas', 'comanda_items', 'pagos'], POST: ['movimientos_inventario', 'gastos_turno', 'descorches', 'novedades'], PATCH: ['productos', 'turnos', 'comandas'], DELETE: [] }
+        ? { GET: ['usuarios', 'productos', 'promociones', 'turnos', 'comandas', 'comanda_items'], POST: ['movimientos_inventario', 'gastos_turno', 'descorches', 'novedades'], PATCH: ['productos', 'turnos', 'comandas'], DELETE: [] }
         : {};
     if (!allowed[method]?.includes(table)) {
       return res.status(403).json({ error: 'Tu rol no tiene permiso para realizar esta operación.' });
@@ -399,23 +400,13 @@ function tableOrFail(req, res, next) {
       return res.status(403).json({ error: 'La operación contiene campos fuera de los permisos de Barra.' });
     }
   }
-  if (['mesero', 'mesero_fijo'].includes(role) && method === 'PATCH') {
-    const columns = Object.keys(req.body || {});
-    const allowedColumns = table === 'comandas'
-      ? ['estado', 'pago_confirmado', 'modo_pago', 'pago_registrado_por', 'pago_registrado_en', 'pagado_en', 'actualizada_en', 'subtotal', 'descuento', 'total', 'mesa']
-      : table === 'comanda_items' ? ['cantidad', 'descuento', 'precio_unitario']
-        : table === 'pagos' ? ['verificado', 'referencia'] : [];
-    if (columns.some(column => !allowedColumns.includes(column))) {
-      return res.status(403).json({ error: 'La operación contiene campos fuera de los permisos de Mesero.' });
-    }
-  }
   next();
 }
 
 function rowsBelongToWaiter(table, rows, userId) {
   return rows.every(row => {
     if (table === 'comandas') return row.mesero_id === userId;
-    if (table === 'comanda_items' || table === 'pagos') {
+    if (table === 'comanda_items') {
       if (!row.comanda_id) return false;
       const order = db.prepare('SELECT mesero_id FROM comandas WHERE id = ?').get(row.comanda_id);
       return order?.mesero_id === userId;
@@ -722,7 +713,11 @@ function formatReceiptDate(value) {
   const dateValue = String(value);
   const date = new Date(dateValue.includes('T') ? dateValue : `${dateValue.replace(' ', 'T')}Z`);
   if (Number.isNaN(date.getTime())) return cleanReceiptText(dateValue);
-  return new Intl.DateTimeFormat('es-CO', { dateStyle: 'short', timeStyle: 'short' }).format(date);
+  return new Intl.DateTimeFormat('es-CO', {
+    dateStyle: 'short',
+    timeStyle: 'short',
+    timeZone: 'America/Bogota',
+  }).format(date);
 }
 
 function sendToBluetoothPrinter(receipt) {
@@ -838,17 +833,395 @@ router.post('/print/invoice', async (req, res) => {
   }
 });
 
+router.post('/comandas/:id/reject', (req, res) => {
+  const role = String(req.authUser?.role || '').toLowerCase();
+  if (!['barra', 'barra_fija'].includes(role)) {
+    return res.status(403).json({ error: 'Solo Barra puede marcar una comanda como no autorizada.' });
+  }
+
+  let transactionStarted = false;
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    transactionStarted = true;
+    const order = db.prepare(`
+      SELECT c.id, c.estado, c.actualizada_en, t.barra_id, t.estado AS turno_estado
+      FROM comandas c
+      JOIN turnos t ON t.id = c.turno_id
+      WHERE c.id = ?
+    `).get(req.params.id);
+    const reject = (status, error) => {
+      db.exec('ROLLBACK');
+      transactionStarted = false;
+      return res.status(status).json({ error });
+    };
+
+    if (!order) return reject(404, 'No se encontró la comanda.');
+    if (String(order.barra_id || '') !== String(req.authUser.id)) {
+      return reject(403, 'Solo la cuenta de Barra asignada al turno puede procesar esta comanda.');
+    }
+    if (order.turno_estado !== 'abierto') {
+      return reject(409, 'El turno de esta comanda ya no está abierto.');
+    }
+    if (order.estado !== 'enviada') {
+      return reject(409, 'Solo se pueden marcar como no autorizadas las comandas pendientes.');
+    }
+
+    const updatedAt = new Date().toISOString();
+    db.prepare(`
+      UPDATE comandas SET estado = 'no_autorizada', actualizada_en = ?
+      WHERE id = ? AND estado = 'enviada'
+    `).run(updatedAt, order.id);
+    db.exec('COMMIT');
+    transactionStarted = false;
+    return res.json({
+      ok: true,
+      comanda: { estado: 'no_autorizada', actualizada_en: updatedAt },
+    });
+  } catch (error) {
+    if (transactionStarted) {
+      try { db.exec('ROLLBACK'); } catch (rollbackError) {
+        console.error('No fue posible revertir el cambio de estado de la comanda:', rollbackError);
+      }
+    }
+    console.error(`No fue posible marcar la comanda ${req.params.id} como no autorizada:`, error);
+    return res.status(500).json({ error: 'No fue posible marcar la comanda como no autorizada.' });
+  }
+});
+
+router.post('/comandas/:id/dispatch', (req, res) => {
+  const role = String(req.authUser?.role || '').toLowerCase();
+  if (!['barra', 'barra_fija'].includes(role)) {
+    return res.status(403).json({ error: 'Solo Barra puede entregar comandas.' });
+  }
+
+  let transactionStarted = false;
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    transactionStarted = true;
+    const order = db.prepare(`
+      SELECT c.*, t.negocio_id, t.barra_id, t.estado AS turno_estado
+      FROM comandas c
+      JOIN turnos t ON t.id = c.turno_id
+      WHERE c.id = ?
+    `).get(req.params.id);
+    const reject = (status, error) => {
+      db.exec('ROLLBACK');
+      transactionStarted = false;
+      return res.status(status).json({ error });
+    };
+
+    if (!order) return reject(404, 'No se encontró la comanda.');
+    if (String(order.barra_id || '') !== String(req.authUser.id)) {
+      return reject(403, 'Solo la cuenta de Barra asignada al turno puede entregar esta comanda.');
+    }
+    if (order.turno_estado !== 'abierto') {
+      return reject(409, 'El turno de esta comanda ya no está abierto.');
+    }
+    if (order.estado !== 'enviada') {
+      return reject(409, 'Esta comanda ya fue procesada o no está pendiente de autorización.');
+    }
+    const items = db.prepare(`
+      SELECT ci.producto_id, ci.cantidad, ci.precio_unitario, ci.descuento,
+             ci.es_cortesia, ci.promociones_aplicadas
+      FROM comanda_items ci JOIN productos p ON p.id = ci.producto_id
+      WHERE ci.comanda_id = ?
+    `).all(order.id);
+    if (!items.length) return reject(409, 'La comanda no tiene productos para entregar.');
+    const isCourtesyItem = item => {
+      let appliedPromotions = [];
+      try { appliedPromotions = JSON.parse(item.promociones_aplicadas || '[]'); } catch {}
+      return Number(item.es_cortesia) === 1 || appliedPromotions.includes('cortesia');
+    };
+
+    const deductions = new Map();
+    items.forEach(item => {
+      deductions.set(item.producto_id, (deductions.get(item.producto_id) || 0) + Number(item.cantidad || 0));
+    });
+    const suppliedCourtesy = new Map();
+    items.forEach(item => {
+      if (isCourtesyItem(item)) {
+        suppliedCourtesy.set(item.producto_id, (suppliedCourtesy.get(item.producto_id) || 0) + Number(item.cantidad || 0));
+      }
+    });
+    const courtesyDeductions = new Map(suppliedCourtesy);
+
+    const stockUpdates = [];
+    for (const [productId, quantity] of deductions) {
+      const product = db.prepare('SELECT id, name, stock FROM productos WHERE id = ? AND negocio_id = ?').get(productId, order.negocio_id);
+      if (!product) return reject(409, 'No se encontró uno de los productos de la comanda en el inventario.');
+      if (!Number.isFinite(Number(product.stock))) return reject(409, `El stock de ${product.name} no es válido. Actualiza el inventario.`);
+      if (Number(product.stock) < quantity) {
+        return reject(409, `Stock insuficiente de ${product.name}: se necesitan ${quantity} y hay ${Number(product.stock)}.`);
+      }
+      stockUpdates.push({ producto_id: product.id, stock: Number(product.stock) - quantity, cantidad: quantity });
+    }
+
+    const now = new Date().toISOString();
+    const updateProduct = db.prepare('UPDATE productos SET stock = ? WHERE id = ? AND negocio_id = ?');
+    const insertMovement = db.prepare(`
+      INSERT INTO movimientos_inventario (id, negocio_id, turno_id, producto_id, tipo, cantidad, motivo, creado_por)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const update of stockUpdates) {
+      updateProduct.run(update.stock, update.producto_id, order.negocio_id);
+      const courtesyQuantity = Math.min(update.cantidad, courtesyDeductions.get(update.producto_id) || 0);
+      const soldQuantity = update.cantidad - courtesyQuantity;
+      if (soldQuantity > 0) {
+        insertMovement.run(
+          crypto.randomUUID(), order.negocio_id, order.turno_id, update.producto_id, 'venta',
+          -soldQuantity, `Comanda #${order.consecutivo || order.id}`, req.authUser.name || req.authUser.id,
+        );
+      }
+      if (courtesyQuantity > 0) {
+        insertMovement.run(
+          crypto.randomUUID(), order.negocio_id, order.turno_id, update.producto_id, 'cortesia',
+          -courtesyQuantity, `Cortesía · Comanda #${order.consecutivo || order.id}`, req.authUser.name || req.authUser.id,
+        );
+      }
+    }
+    db.prepare(`
+      UPDATE comandas
+      SET estado = 'pagada', pago_confirmado = 1, confirmado_en = ?,
+          despachado_en = ?, pagado_en = ?, pago_registrado_en = ?,
+          pago_registrado_por = ?, actualizada_en = ?
+      WHERE id = ? AND estado = 'enviada'
+    `).run(now, now, now, now, req.authUser.id, now, order.id);
+    db.exec('COMMIT');
+    transactionStarted = false;
+    return res.json({
+      ok: true,
+      stock: stockUpdates.map(({ producto_id, stock }) => ({ producto_id, stock })),
+      comanda: {
+        estado: 'pagada',
+        pagos_cortesia: [],
+        pago_confirmado: true,
+        confirmado_en: now,
+        despachado_en: now,
+        pagado_en: now,
+        pago_registrado_en: now,
+        pago_registrado_por: req.authUser.id,
+        actualizada_en: now,
+      },
+      warnings: [],
+    });
+  } catch (error) {
+    if (transactionStarted) {
+      try { db.exec('ROLLBACK'); } catch (rollbackError) {
+        console.error('No fue posible revertir el despacho de la comanda:', rollbackError);
+      }
+    }
+    console.error(`No fue posible entregar la comanda ${req.params.id}:`, error);
+    return res.status(500).json({ error: 'No fue posible entregar y registrar el pago de la comanda.' });
+  }
+});
+
+router.post('/expenses/stock', (req, res) => {
+  const role = String(req.authUser?.role || '').toLowerCase();
+  if (!['gerente', 'administrador'].includes(role)) {
+    return res.status(403).json({ error: 'Solo un gerente o administrador puede registrar compras de insumos.' });
+  }
+
+  const { gasto, productos: supplyItems } = req.body || {};
+  if (!gasto || typeof gasto !== 'object' || Array.isArray(gasto)
+    || typeof gasto.id !== 'string' || !gasto.id.trim()
+    || typeof gasto.negocio_id !== 'string' || !gasto.negocio_id.trim()
+    || typeof gasto.desc !== 'string' || gasto.desc.trim().length > 160
+    || gasto.cat !== 'Insumos'
+    || !/^\d{4}-\d{2}-\d{2}$/.test(String(gasto.fecha || ''))
+    || !Number.isSafeInteger(Number(gasto.monto)) || Number(gasto.monto) <= 0
+    || !Array.isArray(supplyItems) || supplyItems.length === 0 || supplyItems.length > 100) {
+    return res.status(400).json({ error: 'Completa una descripción válida, fecha, monto y al menos un producto para el ingreso.' });
+  }
+  if (!rowIsInBusinessScope('productos', { negocio_id: gasto.negocio_id }, req.authUser)) {
+    return res.status(403).json({ error: 'No tienes acceso al inventario de este negocio.' });
+  }
+  let calculatedAmount = 0;
+  const newProductIds = new Set();
+  const newProductNames = new Set();
+  for (const item of supplyItems) {
+    const productId = item?.producto_id;
+    const newProduct = item?.producto_nuevo;
+    const quantity = Number(item?.cantidad);
+    if (!item || typeof item !== 'object' || Array.isArray(item)
+      || Boolean(productId) === Boolean(newProduct)
+      || !Number.isSafeInteger(quantity) || quantity <= 0
+      || item.costo_unitario === undefined || String(item.costo_unitario).trim() === ''
+      || !Number.isSafeInteger(Number(item.costo_unitario)) || Number(item.costo_unitario) < 0) {
+      return res.status(400).json({ error: 'Cada producto debe tener cantidad entera mayor que cero y costo unitario válido.' });
+    }
+    const lineTotal = quantity * Number(item.costo_unitario);
+    if (!Number.isSafeInteger(lineTotal) || !Number.isSafeInteger(calculatedAmount + lineTotal)) {
+      return res.status(400).json({ error: 'El costo total de los productos supera el monto permitido.' });
+    }
+    calculatedAmount += lineTotal;
+    if (productId && (typeof productId !== 'string' || !productId.trim())) {
+      return res.status(400).json({ error: 'Selecciona un producto válido del inventario.' });
+    }
+    if (newProduct) {
+      if (typeof newProduct.id !== 'string' || !newProduct.id.trim()
+        || typeof newProduct.name !== 'string' || !newProduct.name.trim() || newProduct.name.trim().length > 120
+        || typeof newProduct.cat !== 'string' || !newProduct.cat.trim() || newProduct.cat.trim().length > 60
+        || newProduct.price === undefined || String(newProduct.price).trim() === ''
+        || !Number.isSafeInteger(Number(newProduct.price)) || Number(newProduct.price) < 0
+        || !Number.isSafeInteger(Number(newProduct.min ?? 0)) || Number(newProduct.min ?? 0) < 0) {
+        return res.status(400).json({ error: 'Para cada producto nuevo, indica nombre, categoría y precio de venta válido.' });
+      }
+      const productIdKey = newProduct.id.trim();
+      const productNameKey = newProduct.name.trim().toLocaleLowerCase('es');
+      if (newProductIds.has(productIdKey) || newProductNames.has(productNameKey)) {
+        return res.status(400).json({ error: 'No repitas productos nuevos en el mismo ingreso.' });
+      }
+      newProductIds.add(productIdKey);
+      newProductNames.add(productNameKey);
+    }
+  }
+  if (calculatedAmount <= 0 || calculatedAmount !== Number(gasto.monto)) {
+    return res.status(400).json({ error: 'El monto del gasto debe coincidir con la suma de cantidad por costo unitario de cada producto.' });
+  }
+
+  let transactionStarted = false;
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    transactionStarted = true;
+    const reject = (status, error) => {
+      db.exec('ROLLBACK');
+      transactionStarted = false;
+      return res.status(status).json({ error });
+    };
+    const business = db.prepare('SELECT id FROM negocios WHERE id = ?').get(gasto.negocio_id);
+    if (!business) return reject(404, 'No se encontró el negocio del gasto.');
+    if (db.prepare("SELECT id FROM turnos WHERE negocio_id = ? AND estado = 'abierto' LIMIT 1").get(gasto.negocio_id)) {
+      return reject(409, 'Cierra el turno abierto antes de registrar la compra y aumentar el inventario. Durante el turno, los ajustes se hacen desde la planilla.');
+    }
+
+    const updatedProducts = new Map();
+    const updateProduct = db.prepare('UPDATE productos SET stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND negocio_id = ?');
+    const insertProduct = db.prepare(`
+      INSERT INTO productos (id, negocio_id, name, cat, price, stock, min, courtesy, sort_order)
+      VALUES (?, ?, ?, ?, ?, ?, ?, NULL, COALESCE((SELECT MAX(sort_order) + 1 FROM productos WHERE negocio_id = ?), 0))
+    `);
+    const insertMovement = db.prepare(`
+      INSERT INTO movimientos_inventario (id, negocio_id, turno_id, producto_id, tipo, cantidad, motivo, creado_por)
+      VALUES (?, ?, NULL, ?, 'entrada', ?, ?, ?)
+    `);
+    const purchaseDetails = [];
+    for (const item of supplyItems) {
+      const quantity = Number(item.cantidad);
+      const unitCost = Number(item.costo_unitario);
+      let product;
+      if (item.producto_id) {
+        const productId = item.producto_id.trim();
+        product = updatedProducts.get(productId)
+          || db.prepare('SELECT * FROM productos WHERE id = ? AND negocio_id = ?').get(productId, gasto.negocio_id);
+        if (!product) return reject(404, 'Uno de los productos seleccionados ya no existe en el inventario.');
+        const updatedStock = Number(product.stock) + quantity;
+        if (!Number.isSafeInteger(updatedStock)) return reject(400, `La cantidad supera el límite de existencias permitido para ${product.name}.`);
+        updateProduct.run(updatedStock, product.id, gasto.negocio_id);
+        product = { ...product, stock: updatedStock };
+      } else {
+        const newProduct = item.producto_nuevo;
+        const newProductId = newProduct.id.trim();
+        const productName = newProduct.name.trim();
+        if (db.prepare('SELECT id FROM productos WHERE id = ?').get(newProductId)) {
+          return reject(409, 'No fue posible crear uno de los productos nuevos porque su identificador ya existe. Inténtalo de nuevo.');
+        }
+        if (db.prepare('SELECT id FROM productos WHERE negocio_id = ? AND lower(trim(name)) = lower(?)')
+          .get(gasto.negocio_id, productName)) {
+          return reject(409, `Ya existe el producto "${productName}". Selecciónalo del inventario para aumentar sus existencias.`);
+        }
+        insertProduct.run(
+          newProductId,
+          gasto.negocio_id,
+          productName,
+          newProduct.cat.trim(),
+          Number(newProduct.price),
+          quantity,
+          Number(newProduct.min ?? 0),
+          gasto.negocio_id,
+        );
+        product = db.prepare('SELECT * FROM productos WHERE id = ? AND negocio_id = ?')
+          .get(newProductId, gasto.negocio_id);
+      }
+      updatedProducts.set(String(product.id), product);
+      insertMovement.run(
+        crypto.randomUUID(),
+        gasto.negocio_id,
+        product.id,
+        quantity,
+        `Compra registrada en Gastos: ${product.name} (${quantity} unidades)`,
+        req.authUser.id,
+      );
+      purchaseDetails.push({
+        producto_id: product.id,
+        nombre: product.name,
+        cantidad: quantity,
+        costo_unitario: unitCost,
+        subtotal: quantity * unitCost,
+      });
+    }
+
+    const generatedDescription = [...updatedProducts.values()]
+      .map(product => {
+        const quantity = supplyItems
+          .filter(item => item.producto_id === product.id || item.producto_nuevo?.id === product.id)
+          .reduce((total, item) => total + Number(item.cantidad), 0);
+        return `${product.name} x${quantity}`;
+      })
+      .join(', ');
+    const expense = {
+      id: gasto.id.trim(),
+      negocio_id: gasto.negocio_id,
+      fecha: String(gasto.fecha),
+      desc: gasto.desc.trim() || `Compra de insumos: ${generatedDescription}`.slice(0, 160),
+      monto: Number(gasto.monto),
+      cat: 'Insumos',
+      foto_url: null,
+      procesado: 0,
+      insumos_detalle: purchaseDetails,
+    };
+    db.prepare(`
+      INSERT INTO gastos (id, negocio_id, fecha, desc, monto, cat, foto_url, procesado, insumos_detalle)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      expense.id,
+      expense.negocio_id,
+      expense.fecha,
+      expense.desc,
+      expense.monto,
+      expense.cat,
+      expense.foto_url,
+      expense.procesado,
+      JSON.stringify(expense.insumos_detalle),
+    );
+    db.exec('COMMIT');
+    transactionStarted = false;
+    return res.json({
+      ok: true,
+      gasto: encode(expense),
+      productos: [...updatedProducts.values()].map(encode),
+    });
+  } catch (error) {
+    if (transactionStarted) {
+      try { db.exec('ROLLBACK'); } catch (rollbackError) {
+        console.error('No fue posible revertir el registro de compra de insumos:', rollbackError);
+      }
+    }
+    console.error('No fue posible registrar el gasto y aumentar el inventario:', error);
+    return res.status(500).json({ error: 'No fue posible guardar el gasto y actualizar el inventario.' });
+  }
+});
+
 router.post('/print/order', async (req, res) => {
   const { comanda_id: comandaId, user_id: userId } = req.body || {};
   if (typeof comandaId !== 'string' || !comandaId || typeof userId !== 'string' || !userId) {
-    return res.status(400).json({ error: 'Falta identificar la comanda y la cuenta del mesero.' });
+    return res.status(400).json({ error: 'Falta identificar la comanda y la cuenta de Barra.' });
   }
 
   let order;
   let items;
   try {
     order = db.prepare(`
-      SELECT c.*, t.negocio_id, n.name AS negocio_name, n.tipo AS negocio_tipo
+      SELECT c.*, t.negocio_id, t.barra_id, n.name AS negocio_name, n.tipo AS negocio_tipo
       FROM comandas c
       JOIN turnos t ON t.id = c.turno_id
       JOIN negocios n ON n.id = t.negocio_id
@@ -869,8 +1242,12 @@ router.post('/print/order', async (req, res) => {
   }
 
   if (!order) return res.status(404).json({ error: 'No se encontró la comanda.' });
-  if (order.estado !== 'enviada') return res.status(409).json({ error: 'Solo se pueden imprimir pedidos enviados a barra.' });
-  if (req.authUser.id !== userId || order.mesero_id !== userId) return res.status(403).json({ error: 'Esta comanda no pertenece a la cuenta del mesero autenticado.' });
+  if (order.estado !== 'pagada') return res.status(409).json({ error: 'Solo se imprimen comandas después de autorizar y entregar.' });
+  if (!['barra', 'barra_fija'].includes(String(req.authUser.role || '').toLowerCase())
+    || req.authUser.id !== userId
+    || order.barra_id !== userId) {
+    return res.status(403).json({ error: 'Solo la cuenta de Barra asignada al turno puede imprimir esta comanda.' });
+  }
   if (!items.length) return res.status(409).json({ error: 'La comanda no tiene productos para imprimir.' });
 
   let receipt;
@@ -1015,7 +1392,7 @@ router.get('/:table', tableOrFail, (req, res) => {
     if (req.params.table === 'comandas') {
       clauses.push('mesero_id = ?');
       params.push(req.authUser.id);
-    } else if (['comanda_items', 'pagos'].includes(req.params.table)) {
+    } else if (req.params.table === 'comanda_items') {
       clauses.push('comanda_id IN (SELECT id FROM comandas WHERE mesero_id = ?)');
       params.push(req.authUser.id);
     }
@@ -1035,12 +1412,206 @@ router.get('/:table', tableOrFail, (req, res) => {
   const limit = Number(req.query.limit);
   if (Number.isInteger(limit) && limit > 0) { sql += ' LIMIT ?'; params.push(limit); }
   try {
-    const results = db.prepare(sql).all(...params).map(encode);
+    const role = String(req.authUser.role || '').toLowerCase();
+    const hidePaymentMethod = ['mesero', 'mesero_fijo', 'barra', 'barra_fija'].includes(role)
+      && req.params.table === 'comandas';
+    const results = db.prepare(sql).all(...params).map(row => {
+      const result = encode(row);
+      if (hidePaymentMethod) delete result.modo_pago;
+      return result;
+    });
     if (['mesero', 'mesero_fijo'].includes(String(req.authUser.role).toLowerCase()) && req.params.table === 'turnos') {
       return res.json(results.filter(turno => Array.isArray(turno.meseros_ids) && turno.meseros_ids.includes(req.authUser.id)));
     }
     res.json(results);
   } catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+router.post('/turnos/:turnoId/inventory-opening', (req, res) => {
+  const role = String(req.authUser?.role || '').toLowerCase();
+  if (!['gerente', 'administrador'].includes(role)) {
+    return res.status(403).json({ error: 'Solo el gerente puede corregir el inventario inicial durante el turno.' });
+  }
+
+  const requestedItems = req.body?.productos;
+  if (!Array.isArray(requestedItems) || requestedItems.length === 0 || requestedItems.length > 100) {
+    return res.status(400).json({ error: 'Agrega al menos un producto para corregir el inventario inicial.' });
+  }
+  const targets = new Map();
+  for (const item of requestedItems) {
+    if (!item || typeof item.producto_id !== 'string' || !item.producto_id.trim()
+      || item.inventario_inicial === '' || !Number.isSafeInteger(Number(item.inventario_inicial)) || Number(item.inventario_inicial) < 0) {
+      return res.status(400).json({ error: 'Cada producto debe tener un inventario inicial entero igual o mayor que cero.' });
+    }
+    const productId = item.producto_id.trim();
+    if (targets.has(productId)) {
+      return res.status(400).json({ error: 'No repitas productos en la misma corrección.' });
+    }
+    targets.set(productId, Number(item.inventario_inicial));
+  }
+
+  let transactionStarted = false;
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    transactionStarted = true;
+    const turno = db.prepare('SELECT id, negocio_id, estado, inventario_apertura FROM turnos WHERE id = ?').get(req.params.turnoId);
+    const reject = (status, error) => {
+      db.exec('ROLLBACK');
+      transactionStarted = false;
+      return res.status(status).json({ error });
+    };
+    if (!turno) return reject(404, 'No se encontró el turno.');
+    if (turno.estado !== 'abierto') return reject(409, 'El turno ya está cerrado; no se puede corregir el inventario inicial.');
+    const allowedBusinesses = accessibleBusinessIds(req.authUser);
+    if (allowedBusinesses && !allowedBusinesses.includes(String(turno.negocio_id))) {
+      return reject(403, 'No tienes acceso al negocio de este turno.');
+    }
+
+    const openingInventory = decode({ inventario_apertura: turno.inventario_apertura }).inventario_apertura;
+    if (!Array.isArray(openingInventory)) return reject(409, 'El turno no tiene un inventario inicial válido.');
+    const resultProducts = [];
+    let changedCount = 0;
+    const nextOpeningInventory = [...openingInventory];
+    const updateProduct = db.prepare('UPDATE productos SET stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND negocio_id = ?');
+    for (const [productId, targetStock] of targets) {
+      const product = db.prepare('SELECT id, name, stock FROM productos WHERE id = ? AND negocio_id = ?')
+        .get(productId, turno.negocio_id);
+      if (!product) return reject(404, 'Uno de los productos seleccionados no pertenece al inventario de este negocio.');
+      const openingIndex = nextOpeningInventory.findIndex(item => String(item.producto_id) === String(productId));
+      const previousOpening = openingIndex >= 0
+        ? Number(nextOpeningInventory[openingIndex].cantidad) || 0
+        : Number(product.stock) || 0;
+      const difference = targetStock - previousOpening;
+      const currentStock = Number(product.stock) + difference;
+      if (!Number.isSafeInteger(difference) || !Number.isSafeInteger(currentStock) || currentStock < 0) {
+        return reject(400, `La corrección dejaría existencias inválidas para ${product.name}.`);
+      }
+      const openingItem = openingIndex >= 0
+        ? { ...nextOpeningInventory[openingIndex], nombre: product.name, cantidad: targetStock }
+        : { producto_id: product.id, nombre: product.name, cantidad: targetStock };
+      if (openingIndex >= 0) nextOpeningInventory[openingIndex] = openingItem;
+      else nextOpeningInventory.push(openingItem);
+      resultProducts.push({
+        producto_id: product.id,
+        nombre: product.name,
+        existencias: currentStock,
+        inventario_inicial: targetStock,
+      });
+      if (difference) {
+        updateProduct.run(currentStock, product.id, turno.negocio_id);
+        changedCount += 1;
+      }
+    }
+
+    db.prepare('UPDATE turnos SET inventario_apertura = ? WHERE id = ?')
+      .run(encode({ inventario_apertura: nextOpeningInventory }).inventario_apertura, turno.id);
+    db.exec('COMMIT');
+    transactionStarted = false;
+    return res.status(200).json({
+      ok: true,
+      productos: resultProducts,
+      inventario_apertura: nextOpeningInventory,
+      cambios: changedCount,
+    });
+  } catch (error) {
+    if (transactionStarted) {
+      try { db.exec('ROLLBACK'); } catch (rollbackError) {
+        console.error('No fue posible revertir la corrección del inventario inicial:', rollbackError);
+      }
+    }
+    console.error('No fue posible corregir el inventario inicial del turno:', error);
+    return res.status(400).json({ error: 'No fue posible corregir el inventario inicial.' });
+  }
+});
+
+router.post('/turnos/:turnoId/inventory-intake', (req, res) => {
+  const role = String(req.authUser?.role || '').toLowerCase();
+  if (!['barra', 'barra_fija'].includes(role)) {
+    return res.status(403).json({ error: 'Solo Barra puede registrar ingresos de inventario durante el turno.' });
+  }
+
+  const description = typeof req.body?.descripcion === 'string' ? req.body.descripcion.trim() : '';
+  const requestedItems = req.body?.productos;
+  if (!INVENTORY_INTAKE_REASONS.has(description)
+    || !Array.isArray(requestedItems) || requestedItems.length === 0 || requestedItems.length > 100) {
+    return res.status(400).json({ error: 'Selecciona un motivo válido para el ingreso y agrega al menos un producto del inventario.' });
+  }
+  const quantities = new Map();
+  for (const item of requestedItems) {
+    if (!item || typeof item.producto_id !== 'string' || !item.producto_id.trim()
+      || !Number.isSafeInteger(Number(item.cantidad)) || Number(item.cantidad) <= 0) {
+      return res.status(400).json({ error: 'Cada producto debe ser del inventario y tener una cantidad entera mayor que cero.' });
+    }
+    const productId = item.producto_id.trim();
+    const quantity = Number(item.cantidad);
+    const nextQuantity = (quantities.get(productId) || 0) + quantity;
+    if (!Number.isSafeInteger(nextQuantity)) {
+      return res.status(400).json({ error: 'La cantidad de uno de los productos supera el límite permitido.' });
+    }
+    quantities.set(productId, nextQuantity);
+  }
+
+  let transactionStarted = false;
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    transactionStarted = true;
+    const turno = db.prepare(`
+      SELECT id, negocio_id, estado, barra_id
+      FROM turnos
+      WHERE id = ?
+    `).get(req.params.turnoId);
+    const reject = (status, error) => {
+      db.exec('ROLLBACK');
+      transactionStarted = false;
+      return res.status(status).json({ error });
+    };
+    if (!turno) return reject(404, 'No se encontró el turno.');
+    if (turno.estado !== 'abierto') return reject(409, 'El turno ya está cerrado; no se puede registrar este ingreso.');
+    if (String(turno.barra_id || '') !== String(req.authUser.id)) {
+      return reject(403, 'Solo la cuenta de Barra asignada al turno puede registrar ingresos.');
+    }
+    const now = new Date().toISOString();
+    const products = [];
+    const updateProduct = db.prepare('UPDATE productos SET stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND negocio_id = ?');
+    const insertMovement = db.prepare(`
+      INSERT INTO movimientos_inventario (id, negocio_id, turno_id, producto_id, tipo, cantidad, motivo, creado_por, created_at)
+      VALUES (?, ?, ?, ?, 'entrada', ?, ?, ?, ?)
+    `);
+    const insertNovelty = db.prepare(`
+      INSERT INTO novedades (id, turno_id, texto, creado_por, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    for (const [productId, quantity] of quantities) {
+      const product = db.prepare('SELECT id, name, stock FROM productos WHERE id = ? AND negocio_id = ?')
+        .get(productId, turno.negocio_id);
+      if (!product) return reject(404, 'Uno de los productos seleccionados no pertenece al inventario de este negocio.');
+      const nextStock = Number(product.stock) + quantity;
+      if (!Number.isSafeInteger(nextStock)) {
+        return reject(400, `La cantidad supera el límite de existencias permitido para ${product.name}.`);
+      }
+      updateProduct.run(nextStock, product.id, turno.negocio_id);
+      insertMovement.run(
+        crypto.randomUUID(), turno.negocio_id, turno.id, product.id, quantity,
+        `Se recibe pedido de ${description}: ${product.name} x${quantity}`,
+        req.authUser.id, now,
+      );
+      products.push({ producto_id: product.id, nombre: product.name, cantidad: quantity, stock: nextStock });
+    }
+    const productSummary = products.map(product => `${product.nombre} x${product.cantidad}`).join(', ');
+    const novelty = `Ingreso de inventario · Se recibe pedido de ${description}. Productos: ${productSummary}.`;
+    insertNovelty.run(crypto.randomUUID(), turno.id, novelty, req.authUser.id, now);
+    db.exec('COMMIT');
+    transactionStarted = false;
+    return res.status(201).json({ ok: true, productos: products, novedad: { texto: novelty, created_at: now } });
+  } catch (error) {
+    if (transactionStarted) {
+      try { db.exec('ROLLBACK'); } catch (rollbackError) {
+        console.error('No fue posible revertir el ingreso de inventario:', rollbackError);
+      }
+    }
+    console.error('No fue posible registrar el ingreso de inventario:', error);
+    return res.status(400).json({ error: 'No fue posible registrar el ingreso de inventario.' });
+  }
 });
 
 router.post('/:table', tableOrFail, (req, res) => {
@@ -1081,6 +1652,48 @@ router.post('/:table', tableOrFail, (req, res) => {
     if (['mesero', 'mesero_fijo'].includes(String(req.authUser.role).toLowerCase())
       && !rowsBelongToWaiter(req.params.table, rows, req.authUser.id)) {
       return res.status(403).json({ error: 'Solo puedes registrar operaciones de tus propias comandas.' });
+    }
+    if (['mesero', 'mesero_fijo'].includes(String(req.authUser.role).toLowerCase())) {
+      if (req.params.table === 'comandas') {
+        const existingIds = rows.filter(row => row.id).map(row => row.id);
+        if (existingIds.some(id => db.prepare('SELECT 1 FROM comandas WHERE id = ?').get(id))) {
+          return res.status(409).json({ error: 'No puedes reemplazar ni modificar una comanda existente.' });
+        }
+        if (rows.some(row => row.mesero_id !== req.authUser.id || row.estado !== 'enviada')) {
+          return res.status(403).json({ error: 'Solo puedes crear pedidos pendientes para tu propia cuenta.' });
+        }
+      }
+      if (req.params.table === 'comanda_items') {
+        const orderIds = [...new Set(rows.map(row => String(row.comanda_id || '')))];
+        const initialOrderOnly = orderIds.length === 1
+          && orderIds[0]
+          && rows.every(row => row.id && !db.prepare('SELECT 1 FROM comanda_items WHERE id = ?').get(row.id))
+          && db.prepare("SELECT 1 FROM comandas WHERE id = ? AND mesero_id = ? AND estado = 'enviada'").get(orderIds[0], req.authUser.id)
+          && !db.prepare('SELECT 1 FROM comanda_items WHERE comanda_id = ? LIMIT 1').get(orderIds[0]);
+        if (!initialOrderOnly) {
+          return res.status(403).json({ error: 'Los productos solo se pueden registrar una vez al crear el pedido; no puedes modificar comandas existentes.' });
+        }
+      }
+    }
+    if (req.params.table === 'promociones') {
+      for (const row of rows) {
+        const businessId = String(row.negocio_id || '');
+        if (row.categoria_principal) {
+          const categoryExists = db.prepare('SELECT 1 FROM productos WHERE negocio_id = ? AND cat = ? LIMIT 1')
+            .get(businessId, row.categoria_principal);
+          if (!categoryExists) return res.status(400).json({ error: 'Selecciona una categoría existente para la promoción.' });
+        } else if (row.tipo !== 'combo'
+          && !db.prepare('SELECT 1 FROM productos WHERE id = ? AND negocio_id = ?').get(row.producto_principal_id, businessId)) {
+          return res.status(400).json({ error: 'Selecciona un producto principal válido para la promoción.' });
+        }
+        if (row.tipo === 'cortesia') {
+          const gift = db.prepare('SELECT id FROM productos WHERE id = ? AND negocio_id = ?')
+            .get(row.producto_cortesia_id, businessId);
+          if (!gift) {
+            return res.status(400).json({ error: 'Selecciona un producto de cortesía válido de este negocio.' });
+          }
+        }
+      }
     }
     if (req.params.table === 'usuarios') {
       const master = db.prepare('SELECT id FROM usuarios WHERE lower(email) = ?').get(OWNER_EMAIL);

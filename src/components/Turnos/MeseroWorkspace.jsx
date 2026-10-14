@@ -1,34 +1,34 @@
 import { useEffect, useMemo, useState } from "react";
 import { C, s, COP } from "../../constants/theme.js";
 import {
-  localDelete,
   localFetch,
-  localInsert,
+  localFetchOrThrow,
+  localInsertDetailed,
   localPrintInvoice,
-  localPrintOrder,
-  localUpdate,
 } from "../../lib/localApi.js";
 import { uid } from "../../utils/helpers.js";
 import { formatLocalTime } from "../../utils/dateTime.js";
 import { Badge, Metric, SectionTitle } from "../common/index.jsx";
+import { OrderPageTabs, visibleOrderPage } from "./OrderPagination.jsx";
 import { useTurnoData } from "../../hooks/useTurnoData.js";
 
 const STATUS_LABEL = {
   enviada: "Esperando autorización",
-  entregada_falta_pago: "Entregado · falta pago",
+  no_autorizada: "No autorizada por Barra",
+  entregada_falta_pago: "Entregado (pedido anterior)",
   pagada: "Pagado",
   cancelada: "Cancelado",
 };
 
 const STATUS_COLOR = {
   enviada: C.amber,
+  no_autorizada: C.sub,
   entregada_falta_pago: C.amber,
   pagada: C.green,
   cancelada: C.red,
 };
 const ORDER_STATUS_GROUPS = [
   { id: "enviada", title: "En espera de Barra" },
-  { id: "entregada_falta_pago", title: "Confirmar pago" },
   { id: "pagada", title: "Pagados" },
   { id: "cancelada", title: "Cancelados" },
   { id: "otros", title: "Otros estados" },
@@ -50,21 +50,35 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
   const [productSearch, setProductSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Todos");
   const [items, setItems] = useState([]);
-  const [editingId, setEditingId] = useState(null);
-  const [paymentMethods, setPaymentMethods] = useState({});
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [printingId, setPrintingId] = useState(null);
   const [printMessages, setPrintMessages] = useState({});
   const [promociones, setPromociones] = useState([]);
+  const [promotionsError, setPromotionsError] = useState("");
+  const [promotionsLoading, setPromotionsLoading] = useState(true);
   const [expandedId, setExpandedId] = useState(null);
   const [itemDetails, setItemDetails] = useState({});
-  const [activeOrderStatus, setActiveOrderStatus] = useState("entregada_falta_pago");
+  const [activeWorkspaceSection, setActiveWorkspaceSection] = useState("pedidos");
+  const [activeOrderStatus, setActiveOrderStatus] = useState("enviada");
+  const [orderPage, setOrderPage] = useState(0);
   useEffect(() => {
     let active = true;
-    localFetch("promociones", `negocio_id=eq.${negocio.id}&activo=eq.true&select=*`).then(rows => {
-      if (active) setPromociones(rows || []);
-    });
+    setPromotionsLoading(true);
+    setPromotionsError("");
+    localFetchOrThrow("promociones", `negocio_id=eq.${negocio.id}&activo=eq.true&select=*`)
+      .then(rows => {
+        if (!Array.isArray(rows)) throw new Error("La respuesta de promociones no tiene el formato esperado.");
+        if (active) setPromociones(rows.filter(promotion => promotion.tipo !== "cortesia"));
+      })
+      .catch(error => {
+        if (!active) return;
+        setPromociones([]);
+        setPromotionsError(error.message || "No fue posible cargar las promociones.");
+      })
+      .finally(() => {
+        if (active) setPromotionsLoading(false);
+      });
     return () => { active = false; };
   }, [negocio.id]);
 
@@ -96,10 +110,13 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
   }, [productos, productSearch, selectedCategory]);
 
   const getPromotion = productId => promociones.find(promotion =>
-    ["2x1", "precio_especial"].includes(promotion.tipo) && promotion.producto_principal_id === productId
+    ["2x1", "precio_especial"].includes(promotion.tipo)
+    && (promotion.producto_principal_id === productId
+      || (promotion.categoria_principal
+        && promotion.categoria_principal === productos.find(product => product.id === productId)?.cat))
   );
-
   const itemDiscount = item => {
+    if (item.es_cortesia) return 0;
     const promotion = getPromotion(item.producto_id);
     if (!promotion) return Number(item.comboDiscount || 0);
     const unitPrice = Number(item.precio_unitario || 0);
@@ -119,7 +136,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
 
   const ventasTotal = comandas.reduce(
     (sum, comanda) =>
-      sum + (comanda.estado === "cancelada" ? 0 : Number(comanda.total || 0)),
+      sum + (comanda.estado === "pagada" ? Number(comanda.total || 0) : 0),
     0
   );
 
@@ -132,6 +149,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
       : comanda.estado === statusId
   );
   const visibleOrders = ordersForStatus(activeOrderStatus);
+  const visibleOrderPageItems = visibleOrderPage(visibleOrders, activeOrderStatus, orderPage);
 
   const availableProducts = visibleProducts.filter(
     product => Number(product.stock || 0) > 0
@@ -209,13 +227,11 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
   };
 
   const addPromotion = promotion => {
+    if (promotion.categoria_principal) return;
     const components = promotion.tipo === "combo"
       ? promotionItems(promotion)
       : [
-        { producto_id: promotion.producto_principal_id, cantidad: promotion.cantidad_compra || 1 },
-        ...(promotion.tipo === "cortesia" && promotion.producto_cortesia_id
-          ? [{ producto_id: promotion.producto_cortesia_id, cantidad: promotion.cantidad_cortesia || 1, cortesia: true }]
-          : []),
+        { producto_id: promotion.producto_principal_id, cantidad: promotion.tipo === "2x1" ? promotion.cantidad_compra || 2 : 1 },
       ];
     if (busy || !components.length || (promotion.tipo === "combo" && components.length < 2)) return;
     const valid = components.every(component => {
@@ -255,136 +271,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
 
   const clearComposer = () => {
     setItems([]);
-    setEditingId(null);
     setMessage("");
-  };
-
-  const startEdit = async comanda => {
-    if (comanda.estado !== "enviada" || busy) return;
-
-    const confirmed = window.confirm(
-      `Vas a modificar la comanda #${comanda.consecutivo || "?"}.\n\n` +
-        "Barra recibirá nuevamente el pedido con los cambios realizados.\n\n" +
-        "¿Deseas continuar?"
-    );
-
-    if (!confirmed) return;
-
-    setBusy(true);
-    setMessage("");
-
-    const details = await localFetch(
-      "comanda_items",
-      `comanda_id=eq.${comanda.id}&select=*`
-    );
-
-    if (!details) {
-      setMessage(
-        "No fue posible cargar los productos de esta comanda."
-      );
-      setBusy(false);
-      return;
-    }
-
-    const productById = new Map(
-      productos.map(product => [product.id, product])
-    );
-
-    setItems(
-      details
-        .map(item => ({
-          id: item.id,
-          producto_id: item.producto_id,
-          nombre:
-            productById.get(item.producto_id)?.name ||
-            "Producto no disponible",
-          cantidad: Number(item.cantidad || 0),
-          precio_unitario: Number(
-            item.precio_unitario || 0
-          ),
-          promocionesAplicadas: promotionTypesOf(item.promociones_aplicadas),
-        }))
-        .filter(item => item.cantidad > 0)
-    );
-
-    setEditingId(comanda.id);
-
-    setMessage(
-      `Editando la comanda #${comanda.consecutivo || "?"}. Revisa los productos antes de guardar.`
-    );
-
-    window.scrollTo({
-      top: 0,
-      behavior: "smooth",
-    });
-
-    setBusy(false);
-  };
-
-  const saveItems = async comandaId => {
-    const previous = await localFetch(
-      "comanda_items",
-      `comanda_id=eq.${comandaId}&select=*`
-    );
-
-    if (!previous) return false;
-
-    const currentIds = new Set(
-      items.map(item => item.id).filter(Boolean)
-    );
-
-    const removed = previous.filter(
-      item => !currentIds.has(item.id)
-    );
-
-    for (const item of removed) {
-      if (
-        !(await localDelete("comanda_items", {
-          id: item.id,
-        }))
-      ) {
-        return false;
-      }
-    }
-
-    for (const item of items) {
-      const payload = {
-        cantidad: item.cantidad,
-        precio_unitario: item.precio_unitario,
-        descuento: itemDiscount(item),
-        promociones_aplicadas: promotionTypesOf(item.promocionesAplicadas),
-      };
-
-      const ok = item.id
-        ? await localUpdate(
-            "comanda_items",
-            { id: item.id },
-            payload
-          )
-        : await localInsert("comanda_items", {
-            id: uid(),
-            comanda_id: comandaId,
-            producto_id: item.producto_id,
-            cantidad: item.cantidad,
-            precio_unitario: item.precio_unitario,
-            descuento: itemDiscount(item),
-            promociones_aplicadas: promotionTypesOf(item.promocionesAplicadas),
-          });
-
-      if (!ok) return false;
-    }
-
-    return true;
-  };
-
-  const printOrderForBar = async comandaId => {
-    try {
-      const result = await localPrintOrder(comandaId, userId);
-      return result?.message || "Pedido enviado a imprimir en Printer001.";
-    } catch (error) {
-      console.error("El pedido se guardó, pero no se pudo imprimir para barra:", error);
-      return `No se pudo imprimir en Printer001: ${error.message || "revisa la conexión Bluetooth."}`;
-    }
   };
 
   const submit = async () => {
@@ -396,55 +283,20 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
       return;
     }
 
-    if (editingId) {
-      const confirmed = window.confirm(
-        `¿Guardar cambios en la comanda #${comandas.find(row => row.id === editingId)?.consecutivo || "?"}?\n\n` +
-          "Barra será notificada de que el pedido fue modificado."
-      );
-
-      if (!confirmed) return;
-    }
-
     setBusy(true);
     setMessage("");
 
-    if (editingId) {
-      const detailsUpdated = await saveItems(editingId);
-      const updatedAt = new Date().toISOString();
-      const updated = detailsUpdated && await localUpdate(
-        "comandas",
-        { id: editingId },
-        {
-          subtotal: cartTotal,
-          total: cartTotal,
-          actualizada_en: updatedAt,
-        }
-      );
-
-      if (!detailsUpdated || !updated) {
-        setMessage(
-          "No fue posible guardar todos los cambios de la comanda."
-        );
-      } else {
-        const editedComandaId = editingId;
-        setComandas(current =>
-          current.map(row =>
-            row.id === editedComandaId
-              ? {
-                  ...row,
-                  subtotal: cartTotal,
-                  total: cartTotal,
-                  actualizada_en: updatedAt,
-                }
-              : row
-          )
-        );
-
-        clearComposer();
-        const printMessage = await printOrderForBar(editedComandaId);
-        setMessage(`✓ Comanda modificada y enviada nuevamente a barra. ${printMessage}`);
-      }
-
+    const requestedByProduct = items.reduce((totals, item) => {
+      totals.set(item.producto_id, (totals.get(item.producto_id) || 0) + Number(item.cantidad || 0));
+      return totals;
+    }, new Map());
+    const shortage = [...requestedByProduct].find(([productId, quantity]) => {
+      const product = productos.find(item => item.id === productId);
+      return !product || Number(product.stock || 0) < quantity;
+    });
+    if (shortage) {
+      const product = productos.find(item => item.id === shortage[0]);
+      setMessage(`No hay stock suficiente de ${product?.name || "un producto"} para incluir el pedido (se necesitan ${shortage[1]}).`);
       setBusy(false);
       return;
     }
@@ -465,7 +317,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
       0
     ) + 1;
 
-    const created = await localInsert("comandas", {
+    const created = await localInsertDetailed("comandas", {
       id: comandaId,
       turno_id: turno.id,
       mesa: "",
@@ -477,9 +329,8 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
       total: cartTotal,
     });
 
-    const detailCreated =
-      created &&
-      (await localInsert(
+    const detailCreated = created.ok
+      ? await localInsertDetailed(
         "comanda_items",
         items.map(item => ({
           id: uid(),
@@ -487,14 +338,17 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
           producto_id: item.producto_id,
           cantidad: item.cantidad,
           precio_unitario: item.precio_unitario,
-          descuento: itemDiscount(item),
+          descuento: item.es_cortesia ? 0 : itemDiscount(item),
+          es_cortesia: Boolean(item.es_cortesia),
+          promociones_aplicadas: promotionTypesOf(item.promocionesAplicadas),
         }))
-      ));
+      )
+      : { ok: false, error: "" };
 
-    if (!created || !detailCreated) {
-      setMessage(
-        "No fue posible guardar la comanda."
-      );
+    if (!created.ok) {
+      setMessage(`No fue posible guardar la comanda: ${created.error}`);
+    } else if (!detailCreated.ok) {
+      setMessage(`No fue posible guardar los productos de la comanda: ${detailCreated.error} La comanda parcial quedó guardada; avisa a Barra o al gerente para revisarla.`);
     } else {
       setComandas(current => [
         {
@@ -512,62 +366,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
       ]);
 
       clearComposer();
-
-      const printMessage = await printOrderForBar(comandaId);
-      setMessage(`✓ Pedido enviado a barra correctamente. ${printMessage}`);
-    }
-
-    setBusy(false);
-  };
-
-  const cancel = async comanda => {
-    if (
-      busy ||
-      comanda.estado !== "enviada"
-    ) {
-      return;
-    }
-
-    const confirmed = window.confirm(
-      `¿Cancelar la comanda #${comanda.consecutivo || "?"}?\n\n` +
-        "Barra será notificada de la cancelación."
-    );
-
-    if (!confirmed) return;
-
-    setBusy(true);
-    setMessage("");
-
-    const ok = await localUpdate(
-      "comandas",
-      { id: comanda.id },
-      {
-        estado: "cancelada",
-        actualizada_en: new Date().toISOString(),
-      }
-    );
-
-    if (ok) {
-      setComandas(current =>
-        current.map(row =>
-          row.id === comanda.id
-            ? {
-                ...row,
-                estado: "cancelada",
-              }
-            : row
-        )
-      );
-
-      if (editingId === comanda.id) {
-        clearComposer();
-      }
-
-      setMessage("Pedido cancelado correctamente.");
-    } else {
-      setMessage(
-        "No fue posible cancelar el pedido."
-      );
+      setMessage("✓ Pedido enviado a barra correctamente.");
     }
 
     setBusy(false);
@@ -594,43 +393,6 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
       }));
     }
     setExpandedId(comanda.id);
-  };
-
-  const confirmPayment = async (comanda, paid, method = paymentMethods[comanda.id] || "efectivo") => {
-    if (busy || comanda.estado !== "entregada_falta_pago") return;
-    if (paid && !["efectivo", "tarjeta", "transferencia"].includes(method)) {
-      setMessage("Selecciona el medio de pago.");
-      return;
-    }
-    setBusy(true);
-    setMessage("");
-    const now = new Date().toISOString();
-    const payment = paid
-      ? await localInsert("pagos", {
-          id: uid(),
-          comanda_id: comanda.id,
-          tipo: method,
-          monto: comanda.total,
-          verificado: true,
-        })
-      : true;
-    const updated = payment && await localUpdate("comandas", { id: comanda.id }, {
-      estado: paid ? "pagada" : "entregada_falta_pago",
-      pago_confirmado: paid,
-      modo_pago: paid ? method : null,
-      pago_registrado_por: userId || userName || null,
-      pago_registrado_en: now,
-      pagado_en: paid ? now : null,
-    });
-    if (updated) {
-      setComandas(current => current.map(row => row.id === comanda.id
-        ? { ...row, estado: paid ? "pagada" : "entregada_falta_pago", pago_confirmado: paid, pago_registrado_en: now }
-        : row));
-      setMessage(paid ? "✓ Pago confirmado y comanda cerrada." : "Pago marcado como pendiente.");
-    } else {
-      setMessage("No fue posible actualizar el estado del pago.");
-    }
-    setBusy(false);
   };
 
   const printInvoice = async comanda => {
@@ -756,21 +518,53 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
         />
       </div>
 
-      {promociones.length > 0 && (
-        <div className="waiter-promotions">
+      <div className="waiter-workspace-nav" role="tablist" aria-label="Secciones del mesero">
+        <button
+          id="waiter-workspace-tab-pedidos"
+          type="button"
+          role="tab"
+          aria-selected={activeWorkspaceSection === "pedidos"}
+          aria-controls="waiter-workspace-panel"
+          className={`waiter-workspace-nav__tab${activeWorkspaceSection === "pedidos" ? " is-active" : ""}`}
+          onClick={() => setActiveWorkspaceSection("pedidos")}
+        >
+          🧾 Pedidos
+        </button>
+        <button
+          id="waiter-workspace-tab-promociones"
+          type="button"
+          role="tab"
+          aria-selected={activeWorkspaceSection === "promociones"}
+          aria-controls="waiter-promotions-panel"
+          className={`waiter-workspace-nav__tab${activeWorkspaceSection === "promociones" ? " is-active" : ""}`}
+          onClick={() => setActiveWorkspaceSection("promociones")}
+        >
+          🎁 Promociones <span>{promociones.length}</span>
+        </button>
+      </div>
+
+      {activeWorkspaceSection === "promociones" && (
+        <div id="waiter-promotions-panel" className="waiter-promotions" role="tabpanel" aria-labelledby="waiter-workspace-tab-promociones">
           <div className="waiter-promotions__header">
             <div>
               <span className="waiter-promotions__eyebrow">OFERTAS DISPONIBLES</span>
-              <div className="waiter-promotions__title">Promociones para este pedido</div>
-              <p>Agrega una oferta y se aplicará automáticamente al carrito.</p>
+              <div className="waiter-promotions__title">Promociones activas</div>
+              <p>Agrega una oferta y continúa en Pedidos para revisar el carrito. Las cortesías automáticas están pausadas para evitar diferencias de inventario.</p>
             </div>
             <span className="waiter-promotions__count">{promociones.length} activas</span>
           </div>
-          <div className="waiter-promotions__list">
+          {promotionsLoading ? (
+            <div className="waiter-promotions__empty">Cargando promociones…</div>
+          ) : promotionsError ? (
+            <div className="waiter-promotions__empty" role="alert">{promotionsError}</div>
+          ) : promociones.length ? <div className="waiter-promotions__list">
             {promociones.map(promotion => {
-              const main = productos.find(product => product.id === promotion.producto_principal_id)?.name || "Producto";
+              const main = promotion.categoria_principal
+                ? `Categoría ${promotion.categoria_principal}`
+                : productos.find(product => product.id === promotion.producto_principal_id)?.name || "Producto";
+              const gift = productos.find(product => product.id === promotion.producto_cortesia_id);
               const combo = promotion.tipo === "combo" ? promotionItems(promotion).map(item => `${item.cantidad}× ${productos.find(product => product.id === item.producto_id)?.name || "Producto"}`).join(" + ") : "";
-              const text = promotion.tipo === "2x1" ? `${main}: lleva ${promotion.cantidad_compra || 2}, paga 1` : promotion.tipo === "precio_especial" ? `${main}: ${COP(promotion.precio_promocional)}` : promotion.tipo === "combo" ? `${combo} · ${COP(promotion.precio_promocional)}` : `${main} + cortesía`;
+              const text = promotion.tipo === "2x1" ? `${main}: lleva ${promotion.cantidad_compra || 2}, paga 1` : promotion.tipo === "precio_especial" ? `${main}: ${COP(promotion.precio_promocional)}` : promotion.tipo === "combo" ? `${combo} · ${COP(promotion.precio_promocional)}` : gift ? `${main} + ${promotion.cantidad_cortesia || 1} × ${gift.name} de cortesía` : `${main} + cortesía por configurar`;
               const type = promotion.tipo === "combo" ? "combo" : promotion.tipo === "cortesia" ? "courtesy" : promotion.tipo === "2x1" ? "two-for-one" : "special-price";
               const label = promotion.tipo === "combo" ? "Combo" : promotion.tipo === "cortesia" ? "Producto + cortesía" : promotion.tipo === "2x1" ? "2 × 1" : "Precio especial";
               const icon = promotion.tipo === "combo" ? "🍸" : promotion.tipo === "cortesia" ? "🎁" : promotion.tipo === "2x1" ? "✦" : "◈";
@@ -784,16 +578,24 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                     <strong>{promotion.nombre}</strong>
                     <span>{text}</span>
                   </div>
-                  <button type="button" disabled={busy} onClick={() => addPromotion(promotion)}>
-                    <span aria-hidden="true">＋</span> Agregar al pedido
-                  </button>
+                  {promotion.tipo === "cortesia" && !gift && (
+                    <span className="waiter-promotion__warning" role="alert">
+                      Producto de cortesía no disponible. En Promociones del administrador, selecciona Agua para esta regla.
+                    </span>
+                  )}
+                  {promotion.tipo === "cortesia" && promotion.categoria_principal
+                    ? <span className="waiter-promotion__type">Se aplica al agregar un producto de esta categoría</span>
+                    : <button type="button" disabled={busy} onClick={() => { addPromotion(promotion); setActiveWorkspaceSection("pedidos"); }}>
+                      <span aria-hidden="true">＋</span> Agregar al pedido
+                    </button>}
                 </article>
               );
             })}
-          </div>
+          </div> : <div className="waiter-promotions__empty">No hay promociones activas en este momento.</div>}
         </div>
       )}
 
+      <div id="waiter-workspace-panel" role="tabpanel" aria-labelledby={`waiter-workspace-tab-${activeWorkspaceSection}`} style={{ display: activeWorkspaceSection === "pedidos" ? undefined : "none" }}>
       {/* COMPOSITOR */}
       <div
         style={{
@@ -826,9 +628,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                   fontSize: 18,
                 }}
               >
-                {editingId
-                  ? "✏️ Editando pedido"
-                  : "🛒 Nuevo pedido"}
+                "🛒 Nuevo pedido"
               </div>
 
               <div
@@ -838,48 +638,11 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                   marginTop: 3,
                 }}
               >
-                {editingId
-                  ? "Los cambios serán enviados nuevamente a barra."
-                  : "Agrega productos y envía la comanda cuando esté lista."}
+                "Agrega productos y envía la comanda cuando esté lista."
               </div>
             </div>
 
-            {editingId && (
-              <button
-                type="button"
-                onClick={clearComposer}
-                disabled={busy}
-                style={{
-                  ...s.btn("ghost"),
-                  padding: "7px 11px",
-                }}
-              >
-                Salir de edición
-              </button>
-            )}
           </div>
-
-          {/* ALERTA DE EDICIÓN */}
-          {editingId && (
-            <div
-              style={{
-                marginTop: 12,
-                padding: "10px 12px",
-                borderRadius: 10,
-                background:
-                  "rgba(255,193,7,.10)",
-                border:
-                  "1px solid rgba(255,193,7,.28)",
-                color: C.amber,
-                fontSize: 12,
-                lineHeight: 1.4,
-              }}
-            >
-              ⚠️ <strong>Pedido en edición.</strong>{" "}
-              Al guardar, barra recibirá el cambio
-              realizado sobre esta comanda.
-            </div>
-          )}
         </div>
 
         <div style={{ padding: 16 }}>
@@ -1097,7 +860,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
               >
                 {items.map(item => (
                   <div
-                    key={item.producto_id}
+                    key={`${item.producto_id}-${item.es_cortesia ? "cortesia" : "normal"}`}
                     style={{
                       display: "grid",
                       gridTemplateColumns:
@@ -1113,6 +876,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                     <div style={{ minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                         <span style={{ fontWeight: 700, fontSize: 13 }}>{item.nombre}</span>
+                        {item.es_cortesia && <span style={{ color: C.purple, fontSize: 10, fontWeight: 700 }}>CORTESÍA</span>}
                         {(() => {
                           const productStock = Number(productos.find(p => p.id === item.producto_id)?.stock || 0);
                           const available = productStock >= item.cantidad;
@@ -1129,7 +893,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                         })()}
                       </div>
                       <div style={{ color: C.sub, fontSize: 10, marginTop: 4 }}>
-                        {COP(item.precio_unitario)} c/u
+                        {item.es_cortesia ? "Gratis · cortesía de promoción" : `${COP(item.precio_unitario)} c/u`}
                       </div>
                     </div>
 
@@ -1141,7 +905,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                         gap: 7,
                       }}
                     >
-                      <button
+                      {!item.es_cortesia && <button
                         type="button"
                         onClick={() =>
                           changeQty(
@@ -1165,7 +929,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                         }}
                       >
                         −
-                      </button>
+                      </button>}
 
                       <strong
                         style={{
@@ -1176,7 +940,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                         {item.cantidad}
                       </strong>
 
-                      <button
+                      {!item.es_cortesia && <button
                         type="button"
                         onClick={() =>
                           changeQty(
@@ -1200,9 +964,9 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                         }}
                       >
                         +
-                      </button>
+                      </button>}
 
-                      <button
+                      {!item.es_cortesia && <button
                         type="button"
                         onClick={() =>
                           removeItem(
@@ -1225,7 +989,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                         }}
                       >
                         🗑
-                      </button>
+                      </button>}
                     </div>
 
                     <div
@@ -1303,7 +1067,6 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
             </div>
           )}
 
-          {/* ACCIÓN PRINCIPAL */}
           <button
             type="button"
             disabled={
@@ -1322,11 +1085,7 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
               fontWeight: 800,
             }}
           >
-            {busy
-              ? "Guardando..."
-              : editingId
-              ? "✏️ Guardar cambios y avisar a barra"
-              : "🚀 Enviar pedido a barra"}
+            {busy ? "Guardando..." : "🚀 Enviar pedido a barra"}
           </button>
 
           {!turno && (
@@ -1464,7 +1223,10 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                   aria-selected={activeOrderStatus === group.id}
                   aria-controls="waiter-orders-panel"
                   className={`waiter-order-tab waiter-order-tab--${group.id}${activeOrderStatus === group.id ? " is-active" : ""}`}
-                  onClick={() => setActiveOrderStatus(group.id)}
+                  onClick={() => {
+                    setActiveOrderStatus(group.id);
+                    setOrderPage(0);
+                  }}
                 >
                   <span>{group.title}</span><b>{ordersForStatus(group.id).length}</b>
                 </button>
@@ -1479,23 +1241,24 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
               aria-labelledby={`waiter-order-tab-${activeOrderStatus}`}
               className="waiter-orders-panel"
             >
+              <OrderPageTabs
+                status={activeOrderStatus}
+                orderCount={visibleOrders.length}
+                page={orderPage}
+                onPageChange={setOrderPage}
+                idPrefix="waiter-orders"
+              />
               {visibleOrders.length === 0 ? (
                 <div className="waiter-orders-empty">No hay pedidos en esta categoría.</div>
-              ) : visibleOrders.map(comanda => {
-            const isPending =
-              comanda.estado === "enviada";
-
-            const isEditing =
-              editingId === comanda.id;
-
+              ) : (
+                <div className={["pagada", "cancelada"].includes(activeOrderStatus) ? "order-page-grid" : undefined}>
+                {visibleOrderPageItems.map(comanda => {
             return (
               <div
                 key={comanda.id}
                 style={{
                   borderRadius: 13,
-                  border: isEditing
-                    ? `1px solid ${C.amber}`
-                    : "1px solid rgba(255,255,255,.08)",
+                  border: "1px solid rgba(255,255,255,.08)",
                   background:
                     "rgba(255,255,255,.025)",
                   padding: 18,
@@ -1579,7 +1342,6 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                     {COP(comanda.total)}
                   </strong>
                 </div>
-
                 {/* VER PRODUCTOS */}
                 <div style={{ marginTop: 12 }}>
                   <button style={{ ...s.btn("ghost"), width: "100%", padding: "9px 12px", fontSize: 13, minHeight: 42 }} type="button" disabled={busy} onClick={() => toggleDetails(comanda)}>
@@ -1608,7 +1370,9 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                               </span>
                             </div>
                           </div>
-                          <strong style={{ color: C.green, fontSize: 13, flexShrink: 0 }}>{COP(Number(item.cantidad) * Number(item.precio_unitario))}</strong>
+                          <strong style={{ color: C.green, fontSize: 13, flexShrink: 0 }}>
+                            {Number(item.es_cortesia) ? "Cortesía" : COP(Number(item.cantidad) * Number(item.precio_unitario))}
+                          </strong>
                         </div>
                       );
                     })}
@@ -1616,77 +1380,6 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                 )}
 
                 {/* ACCIONES */}
-                {isPending && (
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns:
-                        "1fr 1fr",
-                      gap: 8,
-                      marginTop: 11,
-                    }}
-                  >
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() =>
-                        startEdit(comanda)
-                      }
-                      style={{
-                        ...s.btn("ghost"),
-                        minHeight: 38,
-                        fontSize: 12,
-                      }}
-                    >
-                      ✏️ Modificar
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() =>
-                        cancel(comanda)
-                      }
-                      style={{
-                        ...s.btn("danger"),
-                        minHeight: 38,
-                        fontSize: 12,
-                      }}
-                    >
-                      ✕ Cancelar
-                    </button>
-                  </div>
-                )}
-
-                {comanda.estado === "entregada_falta_pago" && (
-                  <div style={{ marginTop: 11, padding: 10, borderRadius: 9, background: "rgba(245,158,11,.10)", border: `1px solid ${C.amber}45` }}>
-                    <div style={{ color: C.amber, fontSize: 12, marginBottom: 8 }}>
-                      Barra entregó esta comanda. Confirma si el cliente realizó el pago.
-                    </div>
-                    <select
-                      style={{ ...s.sel, width: "100%", marginBottom: 8 }}
-                      value={paymentMethods[comanda.id] || "efectivo"}
-                      onChange={event => setPaymentMethods(current => ({
-                        ...current,
-                        [comanda.id]: event.target.value,
-                      }))}
-                      disabled={busy}
-                    >
-                      <option value="efectivo">Pago en efectivo</option>
-                      <option value="tarjeta">Pago con tarjeta</option>
-                      <option value="transferencia">Pago por transferencia (API próximamente)</option>
-                    </select>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                      <button type="button" disabled={busy} onClick={() => confirmPayment(comanda, true)} style={{ ...s.btn("success"), minHeight: 38, fontSize: 12 }}>
-                        ✓ Pago recibido
-                      </button>
-                      <button type="button" disabled={busy} onClick={() => confirmPayment(comanda, false)} style={{ ...s.btn("danger"), minHeight: 38, fontSize: 12 }}>
-                        ✕ Falta pago
-                      </button>
-                    </div>
-                  </div>
-                )}
-
                 {comanda.estado === "pagada" && (
                   <div className="waiter-invoice-action">
                     <button
@@ -1707,25 +1400,15 @@ export default function MeseroWorkspace({ negocio, userName, userId }) {
                   </div>
                 )}
 
-                {isEditing && (
-                  <div
-                    style={{
-                      marginTop: 8,
-                      color: C.amber,
-                      fontSize: 10,
-                      textAlign: "center",
-                    }}
-                  >
-                    Esta comanda está siendo
-                    modificada arriba.
-                  </div>
-                )}
               </div>
               );
             })}
             </div>
           )}
+          </div>
+        )}
         </div>
+      </div>
       </div>
     </div>
   );
